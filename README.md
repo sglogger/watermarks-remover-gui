@@ -4,7 +4,7 @@ A small, responsive web frontend for finding and removing AI provenance marks in
 text, documents and images. Paste text or drop files in, see **exactly where the
 marks are**, and remove them if you want to.
 
-![Overview](docs/screenshot-highlight.png)
+![The app running at watermarks.hidden.ch](screenshot/screenshot.png)
 
 ---
 
@@ -167,6 +167,7 @@ Requires Docker. Nothing else — no Node, no Python, no build step.
 
 ```bash
 cp .env.example .env
+cp docker-compose.yml-example docker-compose.yml
 docker compose up -d --build
 open http://127.0.0.1:8080
 ```
@@ -185,8 +186,11 @@ Stop it with `docker compose down`.
 | File | Purpose |
 | --- | --- |
 | `.env.example` → `.env` | every setting, all optional, all commented |
-| `docker-compose.yml` | the working stack; runs as-is |
-| `docker-compose.yml-example` | annotated reference copy with the common variations |
+| `docker-compose.yml-example` → `docker-compose.yml` | the stack; the copy is yours to edit and is not tracked, so local changes never land in a commit |
+
+Both working copies are gitignored on purpose: they are where your deployment
+differs from the repository, and the examples they come from carry the
+annotations explaining what you may want to change.
 
 ---
 
@@ -232,6 +236,8 @@ Engine     watermarks-remover v0.5.0 · up to date · http://wr-core:8765
 ---
 
 ## How "show me where the marks are" works
+
+![Findings marked in place, with a legend and jump navigation](docs/screenshot-highlight.png)
 
 The engine's inspect report caps positions at ten sample offsets per character
 type — enough to say *what* is in a file, not enough to mark *every* occurrence.

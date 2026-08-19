@@ -89,4 +89,3 @@ Reported by the app rather than hidden, and documented in the README:
   pruned, `docker compose pull` fails loudly rather than upgrading silently.
 
 [1.0.0]: https://github.com/sglogger/watermarks-remover-gui/releases/tag/v1.0.0
-die 
