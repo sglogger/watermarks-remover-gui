@@ -1,6 +1,7 @@
 # Local environment
 .env
 *.local
+docker-compose.yml
 
 # Python
 __pycache__/
