@@ -1,0 +1,2 @@
+This file contains nothing unusual at all.
+Scanning it should report a clean result, which is worth checking too.

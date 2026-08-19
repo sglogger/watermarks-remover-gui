@@ -1,0 +1,22 @@
+# Local environment
+.env
+*.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Scratch
+steven/
+CLAUDE.md
+.claude/

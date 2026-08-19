@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Watermarks Detection & Remover GUI</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<div id="login" class="overlay" hidden>
+  <form class="card login-card" id="login-form">
+    <h1>Access required</h1>
+    <p class="muted">This instance is protected by an access token.</p>
+    <label for="login-token">Access token</label>
+    <input type="password" id="login-token" autocomplete="current-password" required>
+    <p class="error" id="login-error" hidden></p>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+</div>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M12 2.5 4 6v6c0 4.7 3.2 8.4 8 9.5 4.8-1.1 8-4.8 8-9.5V6l-8-3.5Z"/>
+        <path class="brand-mark-cut" d="m8.8 12.2 2.2 2.2 4.4-4.6"/>
+      </svg>
+      <div>
+        <h1>Watermarks Detection & Remover</h1>
+        <p class="muted">Find and remove AI provenance marks in text, documents and images.</p>
+      </div>
+    </div>
+    <div class="status" id="status-pill" role="status" aria-live="polite">
+      <span class="dot dot-idle"></span><span class="status-text">Connecting…</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap" id="banners"></div>
+
+<main class="wrap">
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" id="tab-text" role="tab" aria-selected="true" aria-controls="panel-text">Text</button>
+    <button class="tab" id="tab-files" role="tab" aria-selected="false" aria-controls="panel-files">Files</button>
+  </nav>
+
+  <aside class="notice" id="privacy-notice">
+    <svg class="notice-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/>
+    </svg>
+    <p>
+      <strong>Nothing is stored.</strong> Uploads are held in memory for a few
+      minutes and never written to disk. That is not the same as privacy: your
+      content still leaves your device, travels to this server and is processed
+      there. <strong>Don't put confidential or personal material through a
+      service you do not run yourself</strong> — and if you do run it, remember
+      that anyone with access to the machine has access to what passes through
+      it.
+    </p>
+  </aside>
+
+  <details class="card options" id="options">
+    <summary>
+      <span>Advanced options</span>
+      <span class="muted summary-hint">Safe defaults are applied</span>
+    </summary>
+    <div class="option-list" id="option-list"></div>
+  </details>
+
+  <!-- ------------------------------------------------------------------ -->
+  <section class="panel" id="panel-text" role="tabpanel" aria-labelledby="tab-text">
+    <div class="card">
+      <div class="row row-between">
+        <label for="text-format">Treat text as</label>
+        <select id="text-format">
+          <option value="text" selected>Plain text</option>
+          <option value="markdown">Markdown</option>
+          <option value="html">HTML</option>
+          <!-- Enabled by app.js once a paste actually carries a rich flavour.
+               Listed unconditionally so the capability is discoverable. -->
+          <option value="rich" disabled>Rich text (as pasted)</option>
+        </select>
+      </div>
+      <p class="muted field-hint">
+        Leave this on <strong>Plain text</strong> for anything you paste from a
+        document or a chat. Switch to Markdown or HTML only when you are pasting
+        raw <em>source</em>. A document's own properties — author, company,
+        generator — never travel with a paste, so upload the file on the
+        <strong>Files</strong> tab if those matter too.
+      </p>
+      <p class="muted rich-note" id="rich-note" hidden></p>
+      <textarea id="text-input" rows="10" spellcheck="false"
+        placeholder="Paste text here to check it for invisible characters and other watermarks…"></textarea>
+      <div class="row row-between actions">
+        <span class="muted" id="text-count">0 characters</span>
+        <div class="button-group">
+          <button class="ghost" id="text-clear">Clear</button>
+          <button class="primary" id="text-scan">Scan text</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="text-result" hidden></div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <section class="panel" id="panel-files" role="tabpanel" aria-labelledby="tab-files" hidden>
+    <div class="card">
+      <div class="dropzone" id="dropzone" tabindex="0" role="button"
+           aria-label="Choose files or drop them here">
+        <svg class="dropzone-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M12 16V4m0 0L8 8m4-4 4 4"/>
+          <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+        </svg>
+        <p class="dropzone-title">Drop files here, or tap to choose</p>
+        <p class="muted" id="dropzone-hint">Loading supported formats…</p>
+        <input type="file" id="file-input" multiple hidden>
+      </div>
+      <div class="row row-between actions" id="file-actions" hidden>
+        <span class="muted" id="file-count"></span>
+        <div class="button-group">
+          <button class="ghost" id="file-clear">Clear</button>
+          <button class="primary" id="file-scan">Scan files</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="file-result" hidden></div>
+  </section>
+</main>
+
+<footer class="wrap footer">
+  <p class="credit">
+    All watermark detection and removal is performed by
+    <a href="https://github.com/guillaumemeyer/watermarks-remover" target="_blank"
+       rel="noreferrer noopener"><strong>watermarks-remover</strong></a>,
+    created by <strong>Guillaume Meyer</strong> and released under the MIT licence.
+    This project is an independent web frontend for it and contains none of its code.
+  </p>
+  <p class="muted">
+    Detects invisible Unicode carriers, space and character lookalikes, and AI provenance
+    metadata (C2PA, EXIF, XMP, document properties). Statistical token watermarks cannot be
+    detected or removed here — they are only removable by rewriting the text.
+    Audio and video are not supported.
+  </p>
+  <dl class="versions" id="versions"></dl>
+</footer>
+
+<template id="tpl-legend-chip">
+  <button class="chip" type="button"><span class="swatch"></span><span class="chip-label"></span><span class="chip-count"></span></button>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
