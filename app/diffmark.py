@@ -44,6 +44,17 @@ BLOCK_LABEL = "Marked content"
 #: dozens of separate spans.
 _ORDINARY_WHITESPACE = frozenset(" \t\r\n")
 
+#: Characters that render as nothing but that Python's Unicode database does
+#: not put in an invisible category. Engine v0.6.0 started stripping the blank
+#: Hangul fillers, which are `Lo` — "letter, other" — and would otherwise be
+#: mistaken for visible content that the engine deleted.
+_BLANK_LETTERS = frozenset(
+    "\u115f"  # HANGUL CHOSEONG FILLER
+    "\u1160"  # HANGUL JUNGSEONG FILLER
+    "\u3164"  # HANGUL FILLER
+    "\uffa0"  # HALFWIDTH HANGUL FILLER
+)
+
 _DEFAULT_LABELS = {
     "strip": "Invisible character",
     "bidi": "Bidirectional control",
@@ -187,10 +198,18 @@ def _is_carrier(char: str) -> bool:
     itself — is it invisible? — rather than asking which watermark scheme it
     belongs to. That keeps the classification independent of the engine's own
     tables, which are free to change.
+
+    `Cn` covers unassigned code points, the 66 noncharacters and the reserved
+    default-ignorables that engine v0.6.0 added to Layer A. Nothing in `Cn` has
+    a glyph, and this function only ever sees characters the engine already
+    removed, so an unassigned code point in a cleaned diff is a carrier rather
+    than deleted visible content.
     """
     if char in _ORDINARY_WHITESPACE:
         return False
-    if unicodedata.category(char) in ("Cf", "Cc", "Co", "Mn"):
+    if unicodedata.category(char) in ("Cf", "Cc", "Cn", "Co", "Mn"):
+        return True
+    if char in _BLANK_LETTERS:
         return True
     return char.isspace()
 
@@ -334,7 +353,7 @@ def to_utf16_offsets(text: str, spans: list[Span]) -> None:
 
     Python indexes strings by code point, JavaScript by UTF-16 code unit. The
     two agree until a character above the BMP appears — and Unicode tag
-    characters (U+E0000–U+E007F), a real watermark carrier, live in plane 14.
+    characters (U+E0000–U+E0FFF), a real watermark carrier, live in plane 14.
     Without this conversion every highlight after the first tag character would
     be drawn one position too early.
     """

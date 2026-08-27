@@ -16,7 +16,7 @@ name: watermarks-remover-gui
 services:
   # Upstream engine. Referenced by image only: no build context, no source.
   wr-core:
-    image: ghcr.io/guillaumemeyer/watermarks-remover:${WR_CORE_TAG:-v0.5.0}
+    image: ghcr.io/guillaumemeyer/watermarks-remover:${WR_CORE_TAG:-v0.6.0}
     # Upstream publishes linux/amd64 only, so Apple Silicon and other arm64
     # hosts run it emulated. Harmless on amd64 hosts; clear WR_CORE_PLATFORM
     # once upstream ships a native arm64 image.

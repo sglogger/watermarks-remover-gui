@@ -21,6 +21,9 @@ const state = {
   textScan: null,
   fileScans: [],
   authRequired: false,
+  // `tools` from the engine's /capabilities, once /api/status has answered.
+  // Some options depend on a binary the engine image may not ship.
+  engineTools: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -179,6 +182,9 @@ function renderStatus(status) {
       release.url));
   }
 
+  state.engineTools = (engine.capabilities && engine.capabilities.tools) || null;
+  refreshOptionCapabilities();
+
   renderVersions(status.app || {}, engine, release);
 }
 
@@ -228,36 +234,110 @@ function renderVersions(app, engine, release) {
 
 /* ---------------------------------------------------------------- options */
 
+// A checkbox for a boolean option, a select for one the engine types as a
+// string enum. The shape comes from the engine's own OpenAPI document by way of
+// /api/formats, so a new option appears here without a change in this file --
+// as long as it is one of these two kinds.
+function optionControl(def) {
+  const id = `opt-${def.name}`;
+  if (def.type === 'choice') {
+    const select = el('select');
+    select.id = id;
+    for (const choice of def.choices || []) {
+      const opt = el('option', null, choice.label || choice.value);
+      opt.value = choice.value;
+      if (choice.help) opt.title = choice.help;
+      select.appendChild(opt);
+    }
+    select.value = state.options[def.name];
+    select.addEventListener('change', () => {
+      state.options[def.name] = select.value;
+      onOptionsChanged();
+    });
+    return select;
+  }
+
+  const input = el('input');
+  input.type = 'checkbox';
+  input.id = id;
+  input.checked = Boolean(state.options[def.name]);
+  input.addEventListener('change', () => {
+    state.options[def.name] = input.checked;
+    onOptionsChanged();
+  });
+  return input;
+}
+
+// The help text for the value currently selected. A choice option's risk is
+// not uniform across its values, so the per-choice line is what makes "Always"
+// re-encoding your images visible at the moment you pick it.
+function choiceHelp(def) {
+  const current = (def.choices || []).find((c) => c.value === state.options[def.name]);
+  return current && current.help ? current.help : '';
+}
+
 function renderOptions(defs) {
   state.optionDefs = defs;
   const list = clear($('option-list'));
   for (const def of defs) {
-    if (!(def.name in state.options)) state.options[def.name] = Boolean(def.default);
+    if (!(def.name in state.options)) state.options[def.name] = def.default;
 
-    const wrapper = el('div', 'option');
-    const input = el('input');
-    input.type = 'checkbox';
-    input.id = `opt-${def.name}`;
-    input.checked = state.options[def.name];
-    input.addEventListener('change', () => {
-      state.options[def.name] = input.checked;
-      onOptionsChanged();
-    });
+    const isChoice = def.type === 'choice';
+    const wrapper = el('div', isChoice ? 'option option-choice' : 'option');
+    wrapper.dataset.option = def.name;
+    const control = optionControl(def);
 
     const label = el('label', null, def.label);
-    label.htmlFor = input.id;
+    label.htmlFor = control.id;
 
-    wrapper.appendChild(input);
-    wrapper.appendChild(label);
+    // A checkbox reads control-then-label; a select reads label-then-control.
+    if (isChoice) {
+      wrapper.appendChild(label);
+      wrapper.appendChild(control);
+    } else {
+      wrapper.appendChild(control);
+      wrapper.appendChild(label);
+    }
     if (def.help) wrapper.appendChild(el('p', 'help', def.help));
+    if (isChoice) {
+      const detail = el('p', 'help choice-help', choiceHelp(def));
+      wrapper.appendChild(detail);
+    }
     if (def.risk) wrapper.appendChild(el('p', 'risk', `Caution: ${def.risk}`));
     list.appendChild(wrapper);
   }
   updateOptionSummary();
+  refreshOptionCapabilities();
+}
+
+// An option can depend on a tool the engine image does not ship -- the
+// published engine has no Ghostscript, so the PDF deep-image pass reports
+// itself as skipped rather than failing. Saying so beside the control beats
+// letting someone pick "Always" and wonder why nothing changed.
+//
+// /api/formats answers before /api/status, so this runs twice: once with
+// nothing known, and again once capabilities arrive.
+function refreshOptionCapabilities() {
+  for (const def of state.optionDefs) {
+    const wrapper = document.querySelector(`[data-option="${def.name}"]`);
+    if (!wrapper) continue;
+    const existing = wrapper.querySelector('.capability-note');
+    if (existing) existing.remove();
+    if (!def.requires_tool || !state.engineTools) continue;
+    if (state.engineTools[def.requires_tool] !== false) continue;
+    wrapper.appendChild(el('p', 'risk capability-note',
+      `This engine build has no ${def.requires_tool}, so it reports this pass as ` +
+      'skipped whichever value you pick.'));
+  }
 }
 
 function updateOptionSummary() {
-  const changed = state.optionDefs.filter((d) => state.options[d.name] !== Boolean(d.default));
+  for (const def of state.optionDefs) {
+    if (def.type !== 'choice') continue;
+    const detail = document.querySelector(`[data-option="${def.name}"] .choice-help`);
+    if (detail) detail.textContent = choiceHelp(def);
+  }
+  const changed = state.optionDefs.filter((d) => state.options[d.name] !== d.default);
   const hint = document.querySelector('.summary-hint');
   hint.textContent = changed.length
     ? `${plural(changed.length, 'option')} changed`

@@ -8,7 +8,7 @@ import pytest
 
 from app.config import Settings
 from tests.conftest import build_client
-from tests.fake_engine import NBSP, ZWSP
+from tests.fake_engine import NBSP, VERSION, ZWSP
 
 MARKED = f"Hello{ZWSP} world.{NBSP}Second{ZWSP} sentence."
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
@@ -21,7 +21,7 @@ MP3 = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\x00" * 64
 def test_status_reports_the_engine_and_a_clean_contract(client):
     body = client.get("/api/status").json()
     assert body["engine"]["ok"] is True
-    assert body["engine"]["version"] == "v0.5.0"
+    assert body["engine"]["version"] == VERSION
     assert body["contract"]["ok"] is True
     assert body["contract"]["messages"] == []
     assert body["auth_required"] is False
@@ -92,6 +92,21 @@ def test_markdown_is_routed_through_the_container_pipeline(client):
         "/api/scan/text", json={"text": f"# Title{ZWSP}", "format": "markdown"}
     ).json()
     assert body["items"][0]["kind"] == "container"
+
+
+def test_container_layer_a_findings_are_labelled_by_the_engine(client):
+    """Engine v0.6.0 reports invisible characters in Markdown, HTML and SVG.
+
+    It files them under `layer_a_hits`, not the `hits` a text report uses. Miss
+    that and every one of them is highlighted as anonymous deleted content.
+    """
+    body = client.post(
+        "/api/scan/text", json={"text": f"# Title{ZWSP}{NBSP}done", "format": "markdown"}
+    ).json()
+    item = body["items"][0]
+    assert item["kind"] == "container"
+    labels = {(s["kind"], s["label"]) for s in item["highlight"]["spans"]}
+    assert labels == {("strip", "ZERO WIDTH SPACE"), ("space", "NO-BREAK SPACE")}
 
 
 # -- removing ----------------------------------------------------------------
@@ -218,6 +233,41 @@ def test_options_the_engine_never_accepted_are_dropped_before_the_call(client):
         json={"text": MARKED, "options": {"made_up": True, "strip_all_metadata": True}},
     ).json()
     assert body["items"][0]["ok"] is True
+
+
+def test_a_string_option_reaches_the_engine_as_its_enum_value(client):
+    body = client.post(
+        "/api/scan/text",
+        json={"text": MARKED, "options": {"deep_images": "lossless"}},
+    ).json()
+    # The fake engine fails the request outright on an out-of-enum value, so
+    # arriving here at all is the assertion that the string survived intact.
+    assert body["items"][0]["ok"] is True
+
+
+def test_a_bogus_string_option_becomes_the_default_rather_than_an_error(client):
+    body = client.post(
+        "/api/scan/text",
+        json={"text": MARKED, "options": {"deep_images": "sideways"}},
+    ).json()
+    assert body["items"][0]["ok"] is True
+    assert body["items"][0]["suspicious"] is True
+
+
+def test_the_advanced_panel_describes_a_choice_well_enough_to_render_it(client):
+    options = client.get("/api/formats").json()["options"]
+    choice = next(o for o in options if o["name"] == "deep_images")
+    assert choice["type"] == "choice"
+    assert choice["default"] == "auto"
+    assert all("value" in c and "label" in c for c in choice["choices"])
+    # Named so the UI can say the engine image has no Ghostscript.
+    assert choice["requires_tool"] == "ghostscript"
+    assert all(o.get("type") == "bool" for o in options if o["name"] != "deep_images")
+
+
+def test_the_ui_can_tell_that_the_engine_lacks_ghostscript(client):
+    tools = client.get("/api/status").json()["engine"]["capabilities"]["tools"]
+    assert tools["ghostscript"] is False
 
 
 def test_options_dropped_upstream_are_no_longer_sent():

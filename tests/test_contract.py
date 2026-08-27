@@ -81,3 +81,37 @@ def test_a_harmless_batch_gap_is_a_quiet_note_not_a_warning():
     assert len(status.notes()) == 1
     assert "one at a time" in status.notes()[0]
     assert status.to_dict()["notes"] == status.notes()
+
+
+def test_a_string_option_is_offered_as_a_choice_not_a_checkbox():
+    status = contract.check_contract(openapi_spec())
+    spec = next(o for o in contract.ui_options(status) if o["name"] == "deep_images")
+    assert spec["type"] == "choice"
+    assert [c["value"] for c in spec["choices"]] == ["auto", "always", "lossless", "never"]
+    # The default reaches the request as the engine's own enum value, not True.
+    assert contract.default_options(status)["deep_images"] == "auto"
+
+
+def test_a_choice_keeps_a_valid_value_and_rejects_anything_else():
+    status = contract.check_contract(openapi_spec())
+    spec = next(o for o in contract.ui_options(status) if o["name"] == "deep_images")
+    assert contract.coerce_option(spec, "lossless") == "lossless"
+    # v0.6.0 fails the whole request on an out-of-enum value, so a bad one has
+    # to become the default here rather than travel to the engine.
+    for bad in ("sideways", "", True, 1, None, ["always"]):
+        assert contract.coerce_option(spec, bad) == "auto"
+
+
+def test_a_boolean_option_still_coerces_to_a_boolean():
+    status = contract.check_contract(openapi_spec())
+    spec = next(o for o in contract.ui_options(status) if o["name"] == "nfkc")
+    assert contract.coerce_option(spec, "yes") is True
+    assert contract.coerce_option(spec, 0) is False
+
+
+def test_the_engines_new_options_are_all_accounted_for():
+    """Every option v0.6.0 accepts is either offered or deliberately hidden."""
+    status = contract.check_contract(openapi_spec())
+    assert status.unknown_options == []
+    assert status.dropped_options == []
+    assert status.messages() == []

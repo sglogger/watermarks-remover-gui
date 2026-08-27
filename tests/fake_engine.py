@@ -26,9 +26,18 @@ CLEAN_OPTIONS = [
     "strip_all_metadata",
     "detect_before",
     "detect_after",
+    "deep_images",
 ]
 
-VERSION = "v0.5.0"
+#: Options the engine types as a string enum rather than a boolean, and the
+#: values each accepts. Since v0.6.0 a value outside the enum fails the whole
+#: request instead of falling back to the engine's own default.
+STRING_OPTIONS = {
+    "remove_pixel": {"ctrlregen", "diffusion"},
+    "deep_images": {"auto", "always", "lossless", "never"},
+}
+
+VERSION = "v0.6.0"
 
 
 def openapi_spec(options: list[str] | None = None) -> dict[str, Any]:
@@ -54,7 +63,12 @@ def openapi_spec(options: list[str] | None = None) -> dict[str, Any]:
                                         "options": {
                                             "type": "object",
                                             "properties": {
-                                                name: {"type": "boolean"} for name in names
+                                                name: {
+                                                    "type": "string"
+                                                    if name in STRING_OPTIONS
+                                                    else "boolean"
+                                                }
+                                                for name in names
                                             },
                                         },
                                     },
@@ -66,6 +80,7 @@ def openapi_spec(options: list[str] | None = None) -> dict[str, Any]:
             },
             "/inspect/batch": {"post": {}},
             "/clean/batch": {"post": {}},
+            "/detect/batch": {"post": {}},
         },
     }
 
@@ -115,11 +130,14 @@ def _inspect(name: str, data: bytes) -> dict[str, Any]:
                 "sample_offsets": [i for i, c in enumerate(text) if c == NBSP][:10],
             }
         )
+    # A container report keeps its per-character findings under `layer_a_hits`
+    # (engine v0.6.0); only a text report calls them `hits`.
+    hits_key = "layer_a_hits" if kind == "container" else "hits"
     return {
         "ok": True,
         "kind": kind,
         "suspicious": bool(hits),
-        "report": {"length": len(text), "suspicious_total": zwsp + nbsp, "hits": hits},
+        "report": {"length": len(text), "suspicious_total": zwsp + nbsp, hits_key: hits},
     }
 
 
@@ -128,6 +146,11 @@ def _clean(name: str, data: bytes, options: dict[str, Any]) -> dict[str, Any]:
     if unknown:
         # The real engine refuses the whole request on an unknown option.
         return {"ok": False, "error": f"unknown option: {unknown[0]}"}
+    for key, allowed in STRING_OPTIONS.items():
+        value = options.get(key)
+        if value is not None and value not in allowed:
+            # Since v0.6.0 an out-of-enum value is an error, not a fallback.
+            return {"ok": False, "error": f"option {key!r} must be one of {sorted(allowed)}"}
     kind = _kind(name)
     try:
         text = data.decode("utf-8")
@@ -166,7 +189,12 @@ def make_transport(
                     200,
                     json={
                         "version": VERSION,
-                        "tools": {"exiftool": True, "qpdf": True, "c2patool": False},
+                        "tools": {
+                            "exiftool": True,
+                            "qpdf": True,
+                            "c2patool": False,
+                            "ghostscript": False,
+                        },
                         "pixel_backends": {"ctrlregen": False, "diffusion": False},
                     },
                 )

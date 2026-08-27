@@ -120,3 +120,47 @@ def test_a_huge_unalignable_change_degrades_instead_of_hanging(monkeypatch):
     result = diffmark.highlight("aﬃﬃxyzb", "affiffiQb", [])
     assert result.exact is False
     assert result.spans and result.spans[0].action == "changed"
+
+
+# Engine v0.6.0 added these to Layer A. None of them is `Cf`/`Cc`/`Co`/`Mn`,
+# which is all the carrier test used to look at, so without the widened check
+# each one would be reported as a deleted region of visible content.
+V6_CARRIERS = [
+    ("⁥", "reserved default-ignorable"),
+    ("￰", "reserved default-ignorable"),
+    ("\U000e0000", "reserved tag-block code point"),
+    ("\U000e0080", "reserved tag-block code point"),
+    ("﷐", "noncharacter"),
+    ("￾", "noncharacter"),
+    ("᠏", "Mongolian free variation selector"),
+    ("ㅤ", "Hangul filler"),
+    ("ﾠ", "halfwidth Hangul filler"),
+    ("ᅟ", "Hangul choseong filler"),
+]
+
+
+def test_v0_6_0_carriers_are_not_mistaken_for_deleted_content():
+    for char, description in V6_CARRIERS:
+        result = diffmark.highlight(f"a{char}b", "ab", [])
+        assert len(result.spans) == 1, description
+        span = result.spans[0]
+        assert span.kind != diffmark.BLOCK_KIND, description
+        assert span.label != diffmark.BLOCK_LABEL, description
+        # Counted as characters, not as regions.
+        assert result.carrier_chars == 1, description
+        assert result.block_regions == 0, description
+        assert result.legend()[0]["unit"] == "characters", description
+
+
+def test_genuinely_visible_deleted_content_is_still_a_block():
+    result = diffmark.highlight("keep<meta name=generator>keep", "keepkeep", [])
+    assert result.spans and result.spans[0].kind == diffmark.BLOCK_KIND
+    assert result.block_regions == 1
+    assert result.carrier_chars == 0
+
+
+def test_the_engines_own_label_wins_over_the_unicode_database():
+    hits = [{"codepoint": "U+3164", "label": "HANGUL FILLER", "kind": "strip"}]
+    result = diffmark.highlight("aㅤb", "ab", hits)
+    assert result.spans[0].kind == "strip"
+    assert result.spans[0].label == "HANGUL FILLER"

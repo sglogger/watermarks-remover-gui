@@ -82,14 +82,20 @@ trust it has not necessarily deserved.
 
 **Audio and video are deliberately not supported.** MP3, MP4, MOV, WAV and
 friends are refused by extension *and* by content sniffing, so an MP3 renamed to
-`.png` is rejected too, before anything reaches the engine.
+`.png` is rejected too, before anything reaches the engine. Since v0.6.0 the
+engine itself *can* strip AI and C2PA metadata from MP4/MOV, WAV, MP3 and FLAC —
+so this is a scope decision by this frontend, not a limit of the engine. Use the
+engine's own CLI for media files.
 
 ### What it finds, and what it does not
 
 Finds and removes:
 
 - invisible Unicode carriers — zero-width spaces, joiners, bidirectional
-  controls, tag characters, variation selectors, private-use characters;
+  controls, tag characters, variation selectors, private-use characters, and
+  since engine v0.6.0 the noncharacters, reserved default-ignorables and
+  blank-rendering fillers that render as nothing but sit outside every
+  "invisible" Unicode category;
 - space and character lookalikes;
 - AI provenance metadata — C2PA manifests, EXIF and XMP fields, `<meta
   generator>` tags, SVG `<metadata>` blocks, Office document properties.
@@ -212,13 +218,20 @@ or rebuild.
 **2. A startup contract check.** On boot the app reads the engine's own
 `/openapi.json` and verifies that the routes and options it depends on still
 exist. A mismatch produces a banner naming exactly what changed, and the app
-keeps running. This is not theoretical: the released v0.5.0 image has no batch
-endpoints, and the app detected that and fell back to per-file calls on its own.
+keeps running. This is not theoretical, and it has now been proved in both
+directions: v0.5.0 had no batch endpoints, and the app detected that and fell
+back to per-file calls on its own; v0.6.0 added them, and the app picked them up
+without a code change. The same check surfaced `deep_images` the day v0.6.0
+landed, which is how it came to be in the Advanced panel.
 
 **3. Options driven by the engine, not hardcoded.** The Advanced panel is built
-from the option list the engine currently advertises. An option dropped upstream
-disappears from the UI and stops being sent; an option added upstream is reported
-so you know it exists.
+from the option list the engine currently advertises, including each option's
+type — a checkbox for a boolean, a picker for a string enum such as v0.6.0's
+`deep_images`. An option dropped upstream disappears from the UI and stops being
+sent; an option added upstream is reported so you know it exists. Where an
+option needs a tool the engine image does not ship, the panel says so: the
+published image has no Ghostscript, so the PDF deep-image pass reports itself as
+skipped whichever value you pick.
 
 **4. A daily update check.** The UI compares the running engine against the
 newest GitHub release and shows a banner when a newer one is available. This is
@@ -230,7 +243,7 @@ labels them rather than running them together:
 
 ```
 This app   watermarks-remover-gui v1.0.0 · by Steven Glogger
-Engine     watermarks-remover v0.5.0 · up to date · http://wr-core:8765
+Engine     watermarks-remover v0.6.0 · up to date · http://wr-core:8765
 ```
 
 ---
@@ -273,16 +286,40 @@ Remove.
 ### Engine limitations you will meet
 
 The frontend reports what the engine actually does, including when that falls
-short. Two examples found while testing against v0.5.0, both upstream behaviour
-rather than bugs here:
+short. All of the following was re-measured against a running v0.6.0 engine, the
+version this stack pins.
 
-- **DOCX**: the engine detects an AI marker in `docProps/core.xml` but does not
-  remove it under any option, and it does not apply invisible-character cleaning
-  to the document body. Files come back marked "still flagged", with the
-  engine's own explanation shown underneath.
-- **Container inspection**: `/inspect` on Markdown, HTML and SVG reports metadata
-  findings only. Invisible characters are found by the diff described above, not
-  by the report.
+**Fixed since v0.5.0:**
+
+- **DOCX**: the engine used to detect an AI marker in `docProps/core.xml` and
+  remove it under no option, so files came back "still flagged". v0.6.0 empties
+  the `docProps` provenance fields and runs Layer A over DOCX and ODT body text.
+  `examples/sample-marked.docx` now verifies clean.
+- **Markdown and HTML inspection**: `/inspect` used to report metadata findings
+  only. v0.6.0 added a `layer_a_hits` list to container reports, so invisible
+  characters in those formats are named by the engine itself. The app reads that
+  list, which is why a finding in a `.md` or `.html` file now carries the
+  engine's own label rather than one derived from the Unicode database.
+
+**Still true under v0.6.0:**
+
+- **SVG gets no Layer A pass.** The SVG pipeline handles metadata and embedded
+  images; it neither reports nor removes invisible characters in the markup.
+  `examples/sample-marked.svg` carries a zero-width space and a no-break space,
+  and the engine reports `suspicious_total: 0` and an empty `layer_a_hits` for
+  it — the app shows the `<metadata>` block it does remove, and the two
+  characters survive unmentioned. This is the one place where "verified clean"
+  means "the engine has nothing more to say", not "nothing is left".
+- **Bidirectional marks are reported but deliberately kept.** v0.6.0 treats RTL
+  directional marks as load-bearing, so `/inspect` flags a `U+200E` and `/clean`
+  leaves it in place. A file whose only remaining finding is a bidi mark
+  therefore comes back **still flagged** by design, and the app says so rather
+  than quietly calling it clean — `examples/sample-marked.md` is exactly this
+  case.
+
+The diff described above has not become redundant. It still finds every
+occurrence rather than the engine's ten sampled offsets, and it is still what
+catches a carrier the report does not mention.
 
 ---
 
@@ -293,7 +330,7 @@ All settings are optional; the stack runs with an empty `.env`. See
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `WR_CORE_TAG` | `v0.5.0` | engine image tag |
+| `WR_CORE_TAG` | `v0.6.0` | engine image tag |
 | `WR_CORE_PLATFORM` | `linux/amd64` | upstream publishes amd64 only; arm64 hosts emulate |
 | `GUI_HOST_BIND` / `GUI_HOST_PORT` | `127.0.0.1` / `8080` | where the UI is published |
 | `GUI_AUTH_TOKEN` | *(empty)* | shared secret; empty means no login |

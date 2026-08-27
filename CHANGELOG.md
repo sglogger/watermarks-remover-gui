@@ -9,6 +9,68 @@ This file tracks **this frontend only**. The engine it drives,
 its own releases and its own changelog; the version this stack runs is pinned by
 `WR_CORE_TAG` in `.env` and shown in the application footer.
 
+## [1.1.0] — 2026-08-27
+
+Follows engine [v0.6.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.6.0).
+`WR_CORE_TAG` now pins `v0.6.0`.
+
+### Added
+
+- **String-valued clean options.** The engine's option list had been boolean
+  throughout; v0.6.0 introduced `deep_images`, a four-way enum. The Advanced
+  panel now renders a picker for an option the engine types as a string, with
+  the consequence of the selected value spelled out beneath it, and sends the
+  enum value rather than a coerced boolean.
+- **PDF: reach metadata inside embedded images**, the `deep_images` option
+  itself. A PDF can carry AI and C2PA markers inside the images it embeds, where
+  an ordinary metadata strip never looks.
+- **Capability notes on options.** An option that needs a tool the engine image
+  does not ship now says so beside the control. The published engine image has
+  no Ghostscript, so the deep-image pass reports itself as skipped whichever
+  value is picked — worth knowing before choosing one.
+
+### Fixed
+
+- **Invisible characters in Markdown, HTML and SVG are labelled again.** v0.6.0
+  gave container reports a `layer_a_hits` list; only the text reports use
+  `hits`, which is the single key this app read. Findings in those formats were
+  therefore labelled from the Unicode database rather than by the engine.
+- **The characters v0.6.0 added to Layer A are no longer counted as deleted
+  content.** Noncharacters, reserved default-ignorables (`U+2065`,
+  `U+FFF0`–`U+FFF8`, `U+E0000`, `U+E0080`–`U+E0FFF`) and the blank-rendering
+  Hangul fillers (`U+115F`, `U+1160`, `U+3164`, `U+FFA0`) are `Cn` and `Lo` —
+  outside every Unicode category this app treated as invisible. Each was
+  highlighted as a removed region of visible content, with the wrong colour and
+  counted in regions rather than characters.
+- **An out-of-enum option value can no longer fail a whole request.** v0.6.0
+  rejects one where earlier versions substituted their own default, so an
+  unusable value now falls back to the option's default here instead.
+
+### Changed
+
+- The engine's batch endpoints (`/inspect/batch`, `/clean/batch`) exist as of
+  v0.6.0, so the app uses them instead of falling back to one call per file. No
+  code change was needed — the startup contract check picked them up.
+- The README's engine-limitations section and `examples/README.md` were
+  re-measured against a running v0.6.0 engine rather than updated from the
+  release notes. DOCX is fixed — `sample-marked.docx` verifies clean where it
+  used to stay flagged with nothing removed. Two limitations remain and are now
+  documented as current rather than historical: the SVG pipeline still runs no
+  Layer A pass, so invisible characters there are neither reported nor removed;
+  and bidirectional marks are reported but deliberately preserved, so a file
+  whose only finding is a `U+200E` comes back still flagged by design.
+- Test suite is now 76 tests.
+
+### Unchanged, deliberately
+
+- **Audio and video stay refused.** v0.6.0 can strip AI and C2PA metadata from
+  MP4/MOV, WAV, MP3 and FLAC. This frontend still refuses them by extension and
+  by content sniffing; the README now makes clear that this is a scope decision
+  here rather than a limit of the engine.
+- **The detection layers stay out.** v0.6.0 added `/detect`, `/detect/batch` and
+  a keyed-Gumbel detector. None is surfaced: this app finds and removes marks,
+  and `detect_before` / `detect_after` remain hidden options.
+
 ## [1.0.0] — 2026-08-19
 
 First release. A web frontend for the watermarks-remover engine: paste text or
@@ -88,4 +150,5 @@ Reported by the app rather than hidden, and documented in the README:
 - Upstream keeps only the newest version tag plus `latest`. If a pinned tag is
   pruned, `docker compose pull` fails loudly rather than upgrading silently.
 
+[1.1.0]: https://github.com/sglogger/watermarks-remover-gui/releases/tag/v1.1.0
 [1.0.0]: https://github.com/sglogger/watermarks-remover-gui/releases/tag/v1.0.0

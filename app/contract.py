@@ -28,34 +28,84 @@ OPTIONAL_PATHS = ("/inspect/batch", "/clean/batch")
 
 #: Clean options the UI offers today, with the safe default and a warning for
 #: the ones that can change content beyond the watermark itself.
+#:
+#: ``type`` is ``"bool"`` for a checkbox, or ``"choice"`` for a select backed by
+#: ``choices``. The engine has had string-valued options since v0.6.0
+#: (``deep_images``), so a boolean-only pipeline would either drop them or send
+#: a value the engine now rejects outright.
 KNOWN_OPTIONS: dict[str, dict[str, Any]] = {
     "keep_non_ai_metadata": {
         "label": "Keep non-AI metadata",
         "help": "Preserve camera, author and timestamp fields; remove only AI provenance markers.",
+        "type": "bool",
         "default": True,
         "risk": None,
     },
     "also_layer_a_text": {
         "label": "Also scan text inside documents",
         "help": "Look for invisible characters in the text parts of PDFs, DOCX, EPUB and friends.",
+        "type": "bool",
         "default": True,
         "risk": None,
+    },
+    "deep_images": {
+        "label": "PDF: reach metadata inside embedded images",
+        "help": (
+            "A PDF can carry AI and C2PA markers inside the images it embeds, "
+            "where a normal metadata strip never looks. Clearing them means "
+            "re-distilling the PDF through Ghostscript."
+        ),
+        "type": "choice",
+        "default": "auto",
+        "choices": [
+            {
+                "value": "auto",
+                "label": "Auto",
+                "help": "Only re-distill when markers survive the ordinary strip.",
+            },
+            {
+                "value": "always",
+                "label": "Always",
+                "help": "Re-distill every PDF, also clearing non-AI EXIF inside images.",
+            },
+            {
+                "value": "lossless",
+                "label": "Lossless",
+                "help": "Re-distill without recompressing the embedded images.",
+            },
+            {
+                "value": "never",
+                "label": "Never",
+                "help": "Skip the pass; markers inside embedded images stay.",
+            },
+        ],
+        "risk": (
+            "Always re-encodes embedded images and drops their camera metadata; "
+            "Never leaves markers inside images in place."
+        ),
+        #: Engine capability this option needs to do anything. The published
+        #: engine image ships without Ghostscript, and the engine then reports
+        #: the pass as skipped rather than failing, so the UI says so up front.
+        "requires_tool": "ghostscript",
     },
     "aggressive_homoglyphs": {
         "label": "Aggressive homoglyph replacement",
         "help": "Also replace Latin lookalikes and fullwidth characters.",
+        "type": "bool",
         "default": False,
         "risk": "Can alter legitimate non-Latin text and code samples.",
     },
     "nfkc": {
         "label": "Unicode NFKC normalisation",
         "help": "Normalise the whole text to NFKC after cleaning.",
+        "type": "bool",
         "default": False,
         "risk": "Rewrites ligatures, fractions and formatting characters throughout the document.",
     },
     "strip_all_metadata": {
         "label": "Strip all metadata",
         "help": "Remove every metadata field, not just the AI provenance ones.",
+        "type": "bool",
         "default": False,
         "risk": "Destroys copyright, camera and authorship information permanently.",
     },
@@ -191,8 +241,25 @@ def ui_options(status: ContractStatus) -> list[dict[str, Any]]:
     return out
 
 
-def default_options(status: ContractStatus) -> dict[str, bool]:
-    return {opt["name"]: bool(opt["default"]) for opt in ui_options(status)}
+def default_options(status: ContractStatus) -> dict[str, Any]:
+    """The value every option starts at — the conservative choice throughout."""
+    return {opt["name"]: opt["default"] for opt in ui_options(status)}
+
+
+def coerce_option(spec: dict[str, Any], value: Any) -> Any:
+    """Coerce *value* to something the engine will accept for *spec*.
+
+    Anything unusable falls back to the option's default rather than being
+    forwarded. That matters for the choice options: since v0.6.0 the engine
+    rejects the whole request when it sees a value outside the enum, where it
+    used to quietly substitute its own default.
+    """
+    if spec.get("type") == "choice":
+        allowed = {choice["value"] for choice in spec.get("choices") or ()}
+        if isinstance(value, str) and value in allowed:
+            return value
+        return spec["default"]
+    return bool(value)
 
 
 @dataclass

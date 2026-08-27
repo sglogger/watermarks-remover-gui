@@ -119,18 +119,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def _sanitize_options(raw: Any, status: ContractStatus) -> dict[str, Any]:
-    """Keep only options the engine currently accepts, coerced to booleans.
+    """Keep only options the engine currently accepts, coerced to its types.
 
     The engine rejects a request outright if it carries an option it does not
-    know, so filtering here is what keeps the UI working across upstream
-    releases that add or drop options.
+    know — or, since v0.6.0, a value outside a string option's enum — so
+    filtering here is what keeps the UI working across upstream releases that
+    add or drop options.
     """
-    allowed = contract.default_options(status)
-    out = dict(allowed)
+    specs = {opt["name"]: opt for opt in contract.ui_options(status)}
+    out = contract.default_options(status)
     if isinstance(raw, dict):
         for key, value in raw.items():
-            if key in allowed:
-                out[key] = bool(value)
+            spec = specs.get(key)
+            if spec is not None:
+                out[key] = contract.coerce_option(spec, value)
     return out
 
 
@@ -163,12 +165,23 @@ def _report_findings(report: Any) -> list[str]:
     return out[:20]
 
 
+#: Where an inspect report keeps its per-character findings. Text reports use
+#: `hits`; container reports (Markdown, HTML, SVG, EPUB, OOXML) gained
+#: `layer_a_hits` in engine v0.6.0, which is what finally lets the highlighter
+#: label invisible characters in those formats by the engine's own naming
+#: instead of guessing from the Unicode database.
+_HIT_LIST_KEYS = ("hits", "layer_a_hits")
+
+
 def _report_hit_list(report: Any) -> list[Any]:
-    if isinstance(report, dict):
-        hits = report.get("hits")
+    if not isinstance(report, dict):
+        return []
+    out: list[Any] = []
+    for key in _HIT_LIST_KEYS:
+        hits = report.get(key)
         if isinstance(hits, list):
-            return hits
-    return []
+            out.extend(hits)
+    return out
 
 
 def _as_text(data: bytes) -> str | None:

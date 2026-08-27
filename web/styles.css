@@ -294,6 +294,15 @@ button.small { padding: 5px 11px; font-size: .8125rem; }
 .option .help { color: var(--text-muted); }
 .option .risk { color: var(--warn); }
 
+/* A choice option leads with its label and carries the select on the same row,
+   so the help and caution lines below it span the full width rather than the
+   narrow second column a checkbox leaves behind. */
+.option-choice { grid-template-columns: 1fr auto; }
+.option-choice > label { grid-column: 1; align-self: center; }
+.option-choice > select { grid-column: 2; }
+.option-choice .help, .option-choice .risk { grid-column: 1 / -1; }
+.option-choice .choice-help:empty { display: none; }
+
 /* -------------------------------------------------------------- dropzone */
 
 .dropzone {
@@ -514,6 +523,9 @@ mark.hl .ghost-glyph {
   /* On the narrowest phones the label and the picker no longer fit on one
      line, so let the picker take the full width of its own row. */
   select { width: 100%; min-width: 0; }
+  /* The label/select row does not fit side by side on a phone. */
+  .option-choice { grid-template-columns: 1fr; }
+  .option-choice > label, .option-choice > select { grid-column: 1; }
   /* The title and the engine pill cannot share a line on a phone; stack them
      rather than letting the pill run off the edge. */
   .topbar-inner { flex-direction: column; align-items: flex-start; gap: 8px; }
