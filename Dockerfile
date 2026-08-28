@@ -13,6 +13,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /srv
 
+# exiftool for the optional local metadata check (GUI_EXIFTOOL=1). Present but
+# unused when the check is off, which is the default: the engine runs its own
+# copy in its own container, and this one only exists to read the tags the
+# engine's report leaves out.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libimage-exiftool-perl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

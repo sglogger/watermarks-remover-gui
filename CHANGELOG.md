@@ -9,6 +9,40 @@ This file tracks **this frontend only**. The engine it drives,
 its own releases and its own changelog; the version this stack runs is pinned by
 `WR_CORE_TAG` in `.env` and shown in the application footer.
 
+## [Unreleased]
+
+### Added
+
+- **Optional local metadata check (`GUI_EXIFTOOL=1`).** The GUI can now run its
+  own `exiftool` over images, PDF, OOXML, ODT and EPUB after the engine's
+  inspection, and report identity-bearing tags beside the engine's report rather
+  than merged into it. Off by default: it runs a third-party binary over
+  untrusted uploads, which is work the engine otherwise isolates in its own
+  container. Bytes are piped in on stdin, so nothing is written to disk.
+
+  It exists because of a measured gap. The engine ships exiftool and calls it,
+  but reports back only a couple of lines it judged interesting — against a PDF
+  whose Info dictionary held `/Producer`, `/Author` and `/Keywords`, the engine
+  returned `findings: []` and `suspicious: false` while exiftool named all
+  three. This is the note the engine attaches to every PDF made actionable:
+  *"PDF inspection is best-effort; exiftool/c2patool give more reliable metadata
+  detection."*
+
+  A flagged tag now makes a file suspicious in its own right, so a PDF whose
+  only mark is an author name is offered for removal instead of showing as
+  clean. Only identity-bearing tags count — author, producer, GPS, C2PA,
+  document IDs, device serials, the IPTC AI marker, free-text fields; a photo's
+  exposure time is listed but changes no verdict.
+- **Post-removal metadata verification.** The same check re-runs on the cleaned
+  bytes, and a surviving tag now marks the result *still flagged*, naming each
+  one. Measured against engine v0.6.0: a PNG carrying EXIF, XMP and PNG text
+  chunks comes back with EXIF and GPS gone but `PNG:Author`, `PNG:Artist`,
+  `PNG:Copyright`, `PNG:Software`, `XMP:CreatorTool` and `XMP:XMPToolkit`
+  intact — while the engine's own re-inspection reports it verified clean.
+- **`exiftool` in the GUI image**, and `GUI_EXIFTOOL_PATH`,
+  `GUI_EXIFTOOL_TIMEOUT`, `GUI_EXIFTOOL_MAX_MB` to tune the check. A check that
+  is switched on but cannot run says so in a banner instead of failing quietly.
+
 ## [1.1.0] — 2026-08-27
 
 Follows engine [v0.6.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.6.0).

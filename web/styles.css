@@ -461,6 +461,17 @@ mark.hl .ghost-glyph {
 .report-list { margin: 8px 0 0; padding-left: 18px; font-size: .875rem; }
 .report-list li { margin-bottom: 3px; overflow-wrap: anywhere; }
 
+/* The local exiftool pass. Set off from the engine's report above it, because
+   the two are separate opinions and the boundary between them matters. */
+.metascan {
+  margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border);
+}
+.metascan-title {
+  margin: 0 0 6px; font-size: .875rem; font-weight: 600; color: var(--text-muted);
+}
+.metascan .kv { margin-top: 6px; }
+.metascan .kv dt { overflow-wrap: anywhere; }
+
 /* --------------------------------------------------------------- overlay */
 
 .overlay {

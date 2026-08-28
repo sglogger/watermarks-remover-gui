@@ -182,6 +182,13 @@ function renderStatus(status) {
       release.url));
   }
 
+  const meta = status.metadata_check || {};
+  if (meta.enabled && !meta.available) {
+    banners.appendChild(banner('warn',
+      `The local metadata check is switched on but cannot run: ${meta.error || 'exiftool is unavailable'}. ` +
+      'Scans fall back to the engine report alone.'));
+  }
+
   state.engineTools = (engine.capabilities && engine.capabilities.tools) || null;
   refreshOptionCapabilities();
 
@@ -580,6 +587,58 @@ function renderReport(report) {
   return container;
 }
 
+// The engine's own report is rendered above; this is the local exiftool pass,
+// and it is labelled as such. Two programs looked at the file and they do not
+// always agree — presenting the second one as if it were the engine's answer
+// would hide exactly the disagreement that makes it worth running.
+function renderMetadataScan(scan) {
+  const section = el('section', 'metascan');
+  if (!scan) return section;
+
+  const flagged = scan.flagged || [];
+  const other = scan.other || [];
+  const heading = `Metadata check (local ${scan.tool || 'exiftool'}${scan.version ? ' ' + scan.version : ''})`;
+  section.appendChild(el('h4', 'metascan-title', heading));
+
+  if (!scan.ok) {
+    section.appendChild(el('p', 'muted', scan.error || 'The metadata check did not run.'));
+    return section;
+  }
+
+  if (!flagged.length) {
+    section.appendChild(el('p', 'muted',
+      other.length
+        ? `No identifying metadata. ${plural(other.length, 'other tag')} read.`
+        : 'No metadata found.'));
+  } else {
+    section.appendChild(el('p', 'risk',
+      `${plural(flagged.length, 'identifying tag')} found that the engine report does not list.`));
+    const list = el('dl', 'kv');
+    for (const entry of flagged) {
+      list.appendChild(el('dt', null, `${entry.tag} · ${entry.reason}`));
+      list.appendChild(el('dd', null, entry.value));
+    }
+    section.appendChild(list);
+  }
+
+  if (other.length) {
+    const block = el('details', 'report-block');
+    block.appendChild(el('summary', null, `All other tags (${other.length})`));
+    const list = el('dl', 'kv');
+    for (const entry of other) {
+      list.appendChild(el('dt', null, entry.tag));
+      list.appendChild(el('dd', null, entry.value));
+    }
+    block.appendChild(list);
+    section.appendChild(block);
+  }
+  if (scan.truncated) {
+    section.appendChild(el('p', 'muted', 'The tag list was truncated.'));
+  }
+  if (scan.error) section.appendChild(el('p', 'muted', scan.error));
+  return section;
+}
+
 /* ------------------------------------------------------------ rich paste */
 
 // Pasting out of Word, a browser or an editor puts several flavours on the
@@ -782,6 +841,10 @@ function verdictText(result) {
   if (typeof result.remaining_hits === 'number' && result.remaining_hits > 0) {
     return `Cleaned, but ${plural(result.remaining_hits, 'marker')} still detected.`;
   }
+  if ((result.remaining_metadata || []).length) {
+    return `Cleaned, but ${plural(result.remaining_metadata.length, 'identifying tag')} ` +
+      'survived in the file metadata.';
+  }
   return 'Cleaned, but the engine still flags this file. See below.';
 }
 
@@ -930,10 +993,14 @@ function renderFileRow(item, index) {
     } else if (item.highlight && (item.highlight.legend || []).length) {
       body.appendChild(renderLegend(item.highlight.legend, null));
     } else if (item.suspicious) {
-      body.appendChild(el('p', 'muted',
-        'This format cannot be marked up in place; the engine report below lists what was found.'));
+      const onlyMetadata = ((item.metadata_scan || {}).flagged || []).length
+        && !(item.report && (item.report.findings || []).length);
+      body.appendChild(el('p', 'muted', onlyMetadata
+        ? 'Flagged by the local metadata check below, not by the engine report.'
+        : 'This format cannot be marked up in place; the engine report below lists what was found.'));
     }
     if (item.report) body.appendChild(renderReport(item.report));
+    if (item.metadata_scan) body.appendChild(renderMetadataScan(item.metadata_scan));
   }
 
   row.appendChild(head);
@@ -994,6 +1061,9 @@ async function cleanFiles(ids, button, card) {
         body.appendChild(el('p', 'risk', verdictText(result)));
         for (const leftover of result.remaining_findings || []) {
           body.appendChild(el('p', 'muted', `Still flagged: ${leftover}`));
+        }
+        for (const tag of result.remaining_metadata || []) {
+          body.appendChild(el('p', 'muted', `Metadata still present: ${tag}`));
         }
       }
       const link = el('a', null, `Download ${result.cleaned_name}`);

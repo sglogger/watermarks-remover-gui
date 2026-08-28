@@ -27,7 +27,7 @@ from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, contract, diffmark, formats
+from . import __version__, contract, diffmark, formats, metascan
 from .cache import ScanCache, ScanEntry
 from .config import Settings, get_settings
 from .contract import ContractStatus, ReleaseChecker
@@ -69,6 +69,19 @@ async def lifespan(app: FastAPI):
     app.state.releases = ReleaseChecker(
         settings.releases_url, enabled=settings.update_check
     )
+    app.state.metascan = metascan.MetaScanner(
+        enabled=settings.exiftool_enabled,
+        command=settings.exiftool_path,
+        timeout=settings.exiftool_timeout,
+        max_bytes=settings.exiftool_max_bytes,
+    )
+    await app.state.metascan.probe()
+    if settings.exiftool_enabled:
+        if app.state.metascan.available:
+            log.info("metadata check: exiftool %s", app.state.metascan.version)
+        else:
+            log.warning("metadata check disabled: %s", app.state.metascan.error)
+
     app.state.contract = await _run_contract_check(app.state.client)
     for message in app.state.contract.messages():
         log.warning("engine contract: %s", message)
@@ -102,6 +115,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.contract = ContractStatus()
+    app.state.metascan = metascan.MetaScanner(enabled=settings.exiftool_enabled)
 
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(AuthMiddleware, token=settings.auth_token)
@@ -229,6 +243,7 @@ async def _scan_payloads(
     cache: ScanCache = app.state.cache
     status: ContractStatus = app.state.contract
     settings: Settings = app.state.settings
+    scanner: metascan.MetaScanner = app.state.metascan
     warnings: list[str] = []
 
     items: list[ScanItem] = []
@@ -266,6 +281,7 @@ async def _scan_payloads(
 
     # Highlighting needs the cleaned bytes, so clean the text-like items now.
     clean_targets: list[tuple[int, str, bytes]] = []
+    meta_targets: list[tuple[int, str, bytes]] = []
     for (slot, name, data, info), report in zip(accepted, reports):
         item = items[slot]
         if not report.get("ok", True):
@@ -292,6 +308,24 @@ async def _scan_payloads(
         # output is the only complete answer, so ask for it either way.
         if info.highlightable and _as_text(data) is not None:
             clean_targets.append((slot, name, data))
+        if scanner.wanted(info.ext):
+            meta_targets.append((slot, name, data))
+
+    # The engine runs exiftool too, but reports back only a handful of lines it
+    # judged interesting — a PDF carrying /Producer, /Author and /Keywords comes
+    # back with none of them. So read the tags here as well, and let a flagged
+    # tag count as a finding in its own right.
+    if meta_targets:
+        results = await scanner.scan_many([(name, data) for _, name, data in meta_targets])
+        for (slot, name, _), result in zip(meta_targets, results):
+            item = items[slot]
+            item.metadata_scan = result
+            if not result.get("ok"):
+                if result.get("error"):
+                    warnings.append(f"{name}: metadata check failed ({result['error']}).")
+                continue
+            if result.get("flagged"):
+                item.suspicious = True
 
     if clean_targets:
         try:
@@ -465,6 +499,7 @@ def _register_routes(app: FastAPI) -> None:
             "contract": status.to_dict(),
             "release": release.to_dict(),
             "cache": app.state.cache.stats(),
+            "metadata_check": app.state.metascan.to_dict(),
             "auth_required": app.state.settings.auth_enabled,
         }
 
@@ -622,6 +657,27 @@ def _register_routes(app: FastAPI) -> None:
                 item.remaining_hits = _report_hits(check.get("report"))
                 if not item.verified:
                     item.remaining_findings = _report_findings(check.get("report"))
+
+            # And the same second opinion the scan ran, on the cleaned bytes:
+            # a metadata tag the engine left behind is a failure the engine's
+            # own re-inspection would report as a pass.
+            scanner: metascan.MetaScanner = app.state.metascan
+            meta_targets = [
+                (slot, name, data)
+                for slot, name, data in verify_targets
+                if scanner.wanted(formats.extension_of(name))
+            ]
+            if meta_targets:
+                rechecks = await scanner.scan_many(
+                    [(name, data) for _, name, data in meta_targets]
+                )
+                for (slot, _, _), recheck in zip(meta_targets, rechecks):
+                    item = items[slot]
+                    if not recheck.get("ok"):
+                        continue
+                    item.remaining_metadata = metascan.flagged_tags(recheck)
+                    if item.remaining_metadata:
+                        item.verified = False
 
         return CleanResponse(items=items, warnings=warnings)
 

@@ -283,6 +283,45 @@ Nothing is cleaned on your behalf without asking: the cleaned bytes are computed
 server-side to locate the marks, held in memory, and only returned when you press
 Remove.
 
+### The optional metadata check (`GUI_EXIFTOOL=1`)
+
+Off by default. Switched on, the GUI runs its own `exiftool` over images, PDF,
+OOXML, ODT and EPUB **after** the engine has inspected them, and lists what it
+finds beside the engine's report — never merged into it, because the two are
+separate opinions and the disagreement is the point.
+
+It exists because of a measured gap. The engine ships exiftool and calls it
+(`/capabilities` reports `exiftool: true`, and a PDF report carries a
+`tools.exiftool` block), but hands back only a couple of lines it judged
+interesting. Against a PDF whose Info dictionary held `/Producer`, `/Author` and
+`/Keywords`, the engine returned `findings: []` and `suspicious: false` while
+exiftool named all three. The engine says so itself, in a note it attaches to
+every PDF: *"PDF inspection is best-effort; exiftool/c2patool give more reliable
+metadata detection."*
+
+A flagged tag makes a file suspicious in its own right, so a PDF that carries
+nothing but an author name is now offered for removal instead of showing as
+clean. Only identity-bearing tags count — author, producer, GPS, C2PA, document
+IDs, device serials, the IPTC AI marker and free-text fields. A photo's exposure
+time is metadata but identifies nobody, so it is listed separately and changes
+no verdict.
+
+The same check runs again on the cleaned bytes, which is where it earns its
+keep. Measured against v0.6.0: a PNG carrying EXIF, XMP and PNG text chunks
+comes back with EXIF and GPS gone but `PNG:Author`, `PNG:Artist`,
+`PNG:Copyright`, `PNG:Software`, `XMP:CreatorTool` and `XMP:XMPToolkit` intact —
+and the engine's own re-inspection reports `findings: []`, i.e. verified clean.
+With the check on, that file is reported as **still flagged**, naming each
+surviving tag.
+
+The trade is deliberate: this runs a third-party binary over untrusted uploads,
+which is work the engine otherwise isolates inside its own container, and
+exiftool has a CVE history. That is why it is opt-in. Bytes are piped in on
+stdin, so nothing is written to disk either way, and the container's read-only
+root filesystem stays read-only.
+
+---
+
 ### Engine limitations you will meet
 
 The frontend reports what the engine actually does, including when that falls
@@ -338,9 +377,13 @@ All settings are optional; the stack runs with an empty `.env`. See
 | `WATERMARKS_SERVER_API_KEY` | *(empty)* | bearer token for the engine; never reaches the browser |
 | `GUI_MAX_UPLOAD_MB` / `GUI_MAX_FILES` | `32` / `25` | upload limits |
 | `GUI_CACHE_TTL` / `GUI_CACHE_MAX_MB` | `600` / `256` | in-memory scan cache |
+| `GUI_EXIFTOOL` | `0` | local exiftool second opinion on container metadata |
 | `GUI_UPDATE_CHECK` | `1` | daily release check; 0 for offline |
 | `WATERMARKS_MAX_BATCH_FILES` | `50` | engine's per-request file cap; the GUI chunks to match |
 | `GUI_LOG_LEVEL` | `INFO` | log verbosity of the GUI process |
+
+`GUI_EXIFTOOL_PATH`, `GUI_EXIFTOOL_TIMEOUT` and `GUI_EXIFTOOL_MAX_MB` tune the
+metadata check; the defaults (`exiftool`, 20 s, 32 MB) suit the shipped image.
 
 Four more exist for cases you are unlikely to hit — `WR_CORE_TIMEOUT`,
 `WR_CORE_URL`, `GUI_RELEASES_URL`, and the in-container `GUI_BIND` / `GUI_PORT`.
@@ -387,7 +430,7 @@ to script against — `examples/demo.py` uses nothing else.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/status` | engine health and version, contract-check result, update info, this app's own version |
+| `GET /api/status` | engine health and version, contract-check result, update info, metadata-check state, this app's own version |
 | `GET /api/formats` | accepted extensions, limits and the current option list |
 | `POST /api/scan/text` | `{text, format, options}` — scan pasted text |
 | `POST /api/scan/files` | multipart upload — scan files |
@@ -416,7 +459,9 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
 ```
 
 The suite runs against a stand-in engine (`tests/fake_engine.py`) rather than a
-container, so it needs no Docker and finishes in under a second. To work on the
+container, so it needs no Docker and finishes in under a second. The metadata
+check's subprocess tests skip themselves when `exiftool` is not on `PATH`; its
+classification logic is tested either way. To work on the
 frontend without rebuilding the image, mount it live:
 
 ```bash

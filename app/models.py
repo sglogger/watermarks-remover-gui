@@ -40,6 +40,11 @@ class ScanItem(BaseModel):
     text: str | None = None
     highlight: dict[str, Any] | None = None
     report: Any = None
+    #: Second opinion from a locally run exiftool, when GUI_EXIFTOOL is on and
+    #: the format is one that can carry container metadata. Kept beside the
+    #: engine's report rather than merged into it: the two come from different
+    #: programs and only one of them is the engine's own answer.
+    metadata_scan: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -61,6 +66,10 @@ class CleanItem(BaseModel):
     #: count, and `remaining_findings` names what the engine still objects to.
     remaining_hits: int | None = None
     remaining_findings: list[str] = Field(default_factory=list)
+    #: Identity-bearing tags a local exiftool still sees in the cleaned bytes.
+    #: Empty both when nothing survived and when the check did not run, so it
+    #: is evidence of a problem, never of a clean bill of health.
+    remaining_metadata: list[str] = Field(default_factory=list)
     verified: bool | None = None
     error: str | None = None
 

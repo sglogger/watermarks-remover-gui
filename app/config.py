@@ -56,6 +56,20 @@ class Settings:
     max_upload_mb: int = field(default_factory=lambda: _int("GUI_MAX_UPLOAD_MB", 32))
     max_files: int = field(default_factory=lambda: _int("GUI_MAX_FILES", 25))
 
+    # --- Local metadata second opinion ---------------------------------------
+    #: Off by default: it runs a third-party binary over untrusted uploads,
+    #: which is work the engine otherwise isolates in its own container. The
+    #: engine's exiftool output reaches us filtered down to a couple of lines,
+    #: so this is the only way to see the tags it dropped.
+    exiftool_enabled: bool = field(default_factory=lambda: _bool("GUI_EXIFTOOL", False))
+    exiftool_path: str = field(
+        default_factory=lambda: os.environ.get("GUI_EXIFTOOL_PATH", "").strip() or "exiftool"
+    )
+    exiftool_timeout: float = field(
+        default_factory=lambda: float(_int("GUI_EXIFTOOL_TIMEOUT", 20))
+    )
+    exiftool_max_mb: int = field(default_factory=lambda: _int("GUI_EXIFTOOL_MAX_MB", 32))
+
     # --- Scan cache (memory only, never touches disk) ------------------------
     cache_ttl: int = field(default_factory=lambda: _int("GUI_CACHE_TTL", 600))
     cache_max_mb: int = field(default_factory=lambda: _int("GUI_CACHE_MAX_MB", 256))
@@ -76,6 +90,10 @@ class Settings:
     @property
     def cache_max_bytes(self) -> int:
         return self.cache_max_mb * 1024 * 1024
+
+    @property
+    def exiftool_max_bytes(self) -> int:
+        return self.exiftool_max_mb * 1024 * 1024
 
     @property
     def auth_enabled(self) -> bool:
