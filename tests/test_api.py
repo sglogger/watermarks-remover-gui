@@ -262,7 +262,16 @@ def test_the_advanced_panel_describes_a_choice_well_enough_to_render_it(client):
     assert all("value" in c and "label" in c for c in choice["choices"])
     # Named so the UI can say the engine image has no Ghostscript.
     assert choice["requires_tool"] == "ghostscript"
-    assert all(o.get("type") == "bool" for o in options if o["name"] != "deep_images")
+    # Every other option is a checkbox or one of the v0.7.0 free-text fields;
+    # a type the frontend cannot render would be an invisible control.
+    assert {o.get("type") for o in options} == {"bool", "choice", "text"}
+
+    strategy = next(o for o in options if o["name"] == "strategy")
+    assert strategy["type"] == "text"
+    assert strategy["default"] == ""
+    assert strategy["placeholder"]
+    # The rewrite changes the wording, so the panel has to say so.
+    assert strategy["risk"]
 
 
 def test_the_ui_can_tell_that_the_engine_lacks_ghostscript(client):
@@ -289,10 +298,32 @@ def test_options_dropped_upstream_are_no_longer_sent():
 # -- engine failures ---------------------------------------------------------
 
 
-def test_a_failing_clean_still_returns_findings():
+def test_plain_text_positions_survive_a_clean_outage():
+    """Scanning text never calls /clean, so losing /clean costs nothing here.
+
+    Engine v0.7.0 made the Layer B rewrite a mandatory part of cleaning text,
+    which took the clean-and-diff route away from us for plain text. Reading
+    positions out of the inspect report instead means a scan no longer depends
+    on /clean at all.
+    """
     test_client = build_client(fail={"/clean", "/clean/batch"})
     try:
         body = test_client.post("/api/scan/text", json={"text": MARKED}).json()
+        item = body["items"][0]
+        assert item["suspicious"] is True
+        assert item["highlight"]["spans"], "positions come from the report now"
+        assert body["warnings"] == []
+    finally:
+        test_client.__exit__(None, None, None)
+
+
+def test_a_failing_clean_still_returns_findings():
+    """Containers still need the diff, so there the outage degrades gracefully."""
+    test_client = build_client(fail={"/clean", "/clean/batch"})
+    try:
+        body = test_client.post(
+            "/api/scan/text", json={"text": MARKED, "format": "markdown"}
+        ).json()
         item = body["items"][0]
         assert item["suspicious"] is True       # inspect worked
         assert item["highlight"] is None        # positions did not

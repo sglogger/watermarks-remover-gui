@@ -11,7 +11,61 @@ its own releases and its own changelog; the version this stack runs is pinned by
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-05
+
+Follows engine [v0.7.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.7.0).
+`WR_CORE_TAG` now pins `v0.7.0`.
+
+v0.7.0 changed two things this GUI had been reading directly, and both were
+silent failures rather than errors — the app kept running and kept answering
+wrongly. It also made cleaning plain text conditional on a rewrite backend for
+the first time, which is a change in what the tool can do out of the box rather
+than in how it looks.
+
+### Fixed
+
+- **Every file was being reported as watermarked.** v0.7.0 replaced the
+  `suspicious` boolean with an evidence object — `{"verdict": …, "classes":
+  {…}}` — so that four incomparable signals stop being flattened into one bit.
+  A dict is always truthy in Python, so reading it the old way marked every
+  scanned file suspicious, including files with nothing in them. The verdict is
+  now read from its own field, and a bare boolean from an older engine still
+  works.
+- **Every removal was being reported as unverified.** The same shape reaches
+  the post-clean re-inspection, where it inverted the result: a file cleaned
+  perfectly came back *still flagged*.
+
 ### Added
+
+- **Evidence classes are shown, not collapsed.** A scan now lists which kinds
+  of evidence fired, strongest first, with the engine's own description of
+  each: observable provenance metadata, invisible Unicode carriers, a
+  scheme-specific detector hit, a stylometric score. An embedded C2PA manifest
+  is a fact about the file and a stylometry score is a guess about its author;
+  the badge above them cannot say that, so the list does.
+- **Layer B rewrite options — `strategy` and `style`.** Layer A edits
+  characters; Layer B edits wording, because a statistical watermark lives in
+  word choice and survives any amount of character scrubbing. The Advanced
+  panel gained its first free-text controls for these, with the tactic grammar
+  (`paraphrase@0.8,mlm@0.2`) validated here so a typo is a message beside the
+  field rather than a failed clean. Both are marked as affecting plain text
+  only, which is the only pipeline the engine runs Layer B in.
+- **`normalize_spaces`**, so a document whose typography depends on
+  non-breaking spaces — French punctuation, a unit kept with its number — can
+  keep them instead of having them folded to ordinary spaces.
+- **`detect_before` and `detect_after`**, which run the engine's configured
+  watermark detectors over the file and record the score in the report. Turning
+  on the "before" scoring also sets v0.7.0's new `detect` flag on `/inspect`, so
+  the detectors run during a scan too. The published engine image configures no
+  detectors, and the panel says so beside the control rather than letting the
+  option look effective.
+- **Rewrite-backend configuration in `docker-compose.yml` and `.env.example`**,
+  plus a `config/clean_strategy.json` mounted into the engine read-only. The
+  published engine image ships no strategy config, no `transformers` and no LLM,
+  so cleaning plain text fails there by default; these are the settings that fix
+  it. `WATERMARKS_REWRITE_ALLOW_REMOTE` is documented prominently, because from
+  inside a container the host is not loopback and the engine refuses a
+  non-loopback rewrite endpoint without it.
 
 - **Optional local metadata check (`GUI_EXIFTOOL=1`).** The GUI can now run its
   own `exiftool` over images, PDF, OOXML, ODT and EPUB after the engine's
@@ -42,6 +96,37 @@ its own releases and its own changelog; the version this stack runs is pinned by
 - **`exiftool` in the GUI image**, and `GUI_EXIFTOOL_PATH`,
   `GUI_EXIFTOOL_TIMEOUT`, `GUI_EXIFTOOL_MAX_MB` to tune the check. A check that
   is switched on but cannot run says so in a banner instead of failing quietly.
+
+### Changed
+
+- **Scanning plain text no longer calls `/clean`.** Positions used to come from
+  diffing the original against the cleaned bytes. v0.7.0 made the Layer B
+  rewrite a mandatory part of cleaning text, so that request would now either be
+  refused or spend an LLM paraphrase of the whole document on a preview — and
+  return a diff of the entire file instead of the watermark. Plain-text
+  positions are read out of the inspect report instead, which is exact, free,
+  and works with no rewrite backend at all. Markdown, HTML and SVG still use the
+  diff: their pipeline has no Layer B. A side effect is that a scan of pasted
+  text now survives a `/clean` outage entirely.
+- **A refused clean explains what to configure.** The engine's 400 is unwrapped
+  from its JSON envelope and its transport prefix, and a Layer B refusal is
+  extended with the environment variables to set and the note that Markdown,
+  HTML, PDF, Office and image files clean without any of it.
+- **An empty strategy is dropped rather than sent.** An empty text option means
+  "use the engine's own default", but the engine validates `strategy` whenever
+  the key is present and rejects the empty string — sending it would 400 every
+  clean.
+
+### Notes
+
+- **Audio and video stay out of scope.** v0.7.0 added a destructive audio
+  cleaning chain and per-frame video purification, and this GUI still refuses
+  audio and video before anything reaches the engine. `remove_audio_watermark`
+  is therefore hidden deliberately rather than missing: the contract check knows
+  about it and stays quiet instead of reporting an option the UI forgot.
+- **C2PA in AVIF and HEIC** now surfaces through the ordinary image report, with
+  no change here: v0.7.0 learned to recognise the provenance UUID box, and the
+  report is rendered structurally.
 
 ## [1.1.0] — 2026-08-27
 

@@ -33,7 +33,14 @@ class ScanItem(BaseModel):
     ok: bool = True
     kind: str = "unknown"
     size: int = 0
+    #: Flattened from the engine's verdict. v0.7.0 replaced the plain boolean
+    #: with an evidence object; this stays a boolean so the UI has one thing to
+    #: branch on, and `evidence` carries the detail behind it.
     suspicious: bool = False
+    #: Per-class evidence from engine v0.7.0's structured `suspicious` report:
+    #: one entry per class that is present, strongest first. None for engines
+    #: that still answer with a bare boolean.
+    evidence: list[dict[str, Any]] | None = None
     highlightable: bool = False
     #: Original text, sent back only for highlightable files below the inline
     #: size limit, so the browser can render the marked-up view.
@@ -71,6 +78,9 @@ class CleanItem(BaseModel):
     #: is evidence of a problem, never of a clean bill of health.
     remaining_metadata: list[str] = Field(default_factory=list)
     verified: bool | None = None
+    #: Same evidence breakdown as `ScanItem.evidence`, but for the re-inspected
+    #: cleaned bytes — so "not verified" can say which class still objects.
+    evidence: list[dict[str, Any]] | None = None
     error: str | None = None
 
 

@@ -24,6 +24,9 @@ const state = {
   // `tools` from the engine's /capabilities, once /api/status has answered.
   // Some options depend on a binary the engine image may not ship.
   engineTools: null,
+  // True when the engine reports at least one usable watermark detector. The
+  // published image ships none, and "score the file" then does nothing at all.
+  engineDetectors: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -189,7 +192,9 @@ function renderStatus(status) {
       'Scans fall back to the engine report alone.'));
   }
 
-  state.engineTools = (engine.capabilities && engine.capabilities.tools) || null;
+  const capabilities = engine.capabilities || null;
+  state.engineTools = (capabilities && capabilities.tools) || null;
+  state.engineDetectors = detectorsAvailable(capabilities);
   refreshOptionCapabilities();
 
   renderVersions(status.app || {}, engine, release);
@@ -242,11 +247,27 @@ function renderVersions(app, engine, release) {
 /* ---------------------------------------------------------------- options */
 
 // A checkbox for a boolean option, a select for one the engine types as a
-// string enum. The shape comes from the engine's own OpenAPI document by way of
-// /api/formats, so a new option appears here without a change in this file --
-// as long as it is one of these two kinds.
+// string enum, a text field for a free-form one. The shape comes from the
+// engine's own OpenAPI document by way of /api/formats, so a new option appears
+// here without a change in this file -- as long as it is one of these kinds.
 function optionControl(def) {
   const id = `opt-${def.name}`;
+  if (def.type === 'text') {
+    const input = el('input');
+    input.type = 'text';
+    input.id = id;
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    if (def.placeholder) input.placeholder = def.placeholder;
+    input.value = state.options[def.name] || '';
+    // `input`, not `change`: the summary and the stale-results note should
+    // follow the field as it is typed, not wait for focus to leave it.
+    input.addEventListener('input', () => {
+      state.options[def.name] = input.value;
+      onOptionsChanged();
+    });
+    return input;
+  }
   if (def.type === 'choice') {
     const select = el('select');
     select.id = id;
@@ -290,15 +311,17 @@ function renderOptions(defs) {
     if (!(def.name in state.options)) state.options[def.name] = def.default;
 
     const isChoice = def.type === 'choice';
-    const wrapper = el('div', isChoice ? 'option option-choice' : 'option');
+    const isText = def.type === 'text';
+    const wrapper = el('div', `option${isChoice ? ' option-choice' : ''}${isText ? ' option-text' : ''}`);
     wrapper.dataset.option = def.name;
     const control = optionControl(def);
 
     const label = el('label', null, def.label);
     label.htmlFor = control.id;
 
-    // A checkbox reads control-then-label; a select reads label-then-control.
-    if (isChoice) {
+    // A checkbox reads control-then-label; a select or a text field reads
+    // label-then-control, because the control is the wide part of the row.
+    if (isChoice || isText) {
       wrapper.appendChild(label);
       wrapper.appendChild(control);
     } else {
@@ -309,6 +332,11 @@ function renderOptions(defs) {
     if (isChoice) {
       const detail = el('p', 'help choice-help', choiceHelp(def));
       wrapper.appendChild(detail);
+    }
+    // An option that only bites on one kind of file should say so, rather than
+    // implying it changes what happens to the PDF sitting beside it.
+    if (def.applies_to === 'text') {
+      wrapper.appendChild(el('p', 'help', 'Applies to plain text only — Markdown, HTML, PDF, Office and image files ignore it.'));
     }
     if (def.risk) wrapper.appendChild(el('p', 'risk', `Caution: ${def.risk}`));
     list.appendChild(wrapper);
@@ -330,12 +358,37 @@ function refreshOptionCapabilities() {
     if (!wrapper) continue;
     const existing = wrapper.querySelector('.capability-note');
     if (existing) existing.remove();
+    if (def.requires_detector) {
+      if (state.engineDetectors !== false) continue;
+      wrapper.appendChild(el('p', 'risk capability-note',
+        'This engine build has no watermark detector configured, so scoring ' +
+        'reports nothing whichever value you pick.'));
+      continue;
+    }
     if (!def.requires_tool || !state.engineTools) continue;
     if (state.engineTools[def.requires_tool] !== false) continue;
     wrapper.appendChild(el('p', 'risk capability-note',
       `This engine build has no ${def.requires_tool}, so it reports this pass as ` +
       'skipped whichever value you pick.'));
   }
+}
+
+// The engine lists detectors in two places -- `text_detectors` for text and
+// `scorers` for images -- and stylometry is always on, so it is excluded: a
+// build with nothing but stylometry cannot score a watermark scheme.
+function detectorsAvailable(capabilities) {
+  if (!capabilities) return null;
+  const groups = [capabilities.text_detectors, capabilities.scorers];
+  let known = false;
+  for (const group of groups) {
+    if (!group || typeof group !== 'object') continue;
+    for (const [name, value] of Object.entries(group)) {
+      if (name === 'stylometry') continue;
+      known = true;
+      if (value) return true;
+    }
+  }
+  return known ? false : null;
 }
 
 function updateOptionSummary() {
@@ -502,6 +555,49 @@ function renderFindings(text, highlight) {
     fragment.appendChild(bar);
   }
   return fragment;
+}
+
+/* ---------------------------------------------------- evidence classes */
+
+// v0.7.0 stopped answering "is this watermarked?" with one boolean and started
+// reporting each kind of evidence separately, because the four are not
+// comparable: an embedded C2PA manifest is a fact about the file, while a
+// stylometry score is a guess about its author. Flattening them back into a
+// single badge would throw away the distinction the engine went to the trouble
+// of drawing, so the classes are listed under the verdict.
+const EVIDENCE_LABELS = {
+  provenance: 'Provenance metadata',
+  layer_a_unicode: 'Invisible characters',
+  watermark_detector: 'Watermark detector',
+  stylometry: 'Writing-style score',
+};
+
+const STRENGTH_LABELS = {
+  definitive: 'observed directly',
+  deterministic: 'observed directly',
+  scheme_specific: 'specific to one scheme',
+  heuristic: 'statistical guess',
+};
+
+function renderEvidence(evidence) {
+  if (!evidence || !evidence.length) return null;
+  const box = el('div', 'evidence');
+  box.appendChild(el('p', 'evidence-title', evidence.length > 1
+    ? 'Evidence found, strongest first'
+    : 'Evidence found'));
+  const list = el('ul', 'evidence-list');
+  for (const entry of evidence) {
+    const item = el('li');
+    const name = EVIDENCE_LABELS[entry.name]
+      || String(entry.name || '').replace(/_/g, ' ');
+    item.appendChild(el('span', 'evidence-name', name));
+    const strength = STRENGTH_LABELS[entry.strength];
+    if (strength) item.appendChild(el('span', 'evidence-strength', strength));
+    if (entry.description) item.appendChild(el('p', 'help', entry.description));
+    list.appendChild(item);
+  }
+  box.appendChild(list);
+  return box;
 }
 
 /* ------------------------------------------------------ report rendering */
@@ -773,6 +869,8 @@ function renderTextResult(warnings) {
   }
 
   card.appendChild(summaryLine('found', describeFindings(highlight) + ' found.'));
+  const evidence = renderEvidence(item.evidence);
+  if (evidence) card.appendChild(evidence);
   card.appendChild(renderFindings(scan.text, highlight));
 
   const actions = el('div', 'row row-between actions');
@@ -987,6 +1085,9 @@ function renderFileRow(item, index) {
     meta.appendChild(el('dt', null, 'Detected as'));
     meta.appendChild(el('dd', null, item.kind));
     body.appendChild(meta);
+
+    const evidence = renderEvidence(item.evidence);
+    if (evidence) body.appendChild(evidence);
 
     if (item.text !== null && item.text !== undefined && item.highlight) {
       body.appendChild(renderFindings(item.text, item.highlight));

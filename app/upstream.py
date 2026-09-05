@@ -67,9 +67,9 @@ class UpstreamClient:
     @staticmethod
     def _decode(response: httpx.Response, path: str) -> Any:
         if response.status_code >= 400:
-            detail = response.text.strip()[:400] or response.reason_phrase
             raise UpstreamError(
-                f"engine returned {response.status_code} for {path}: {detail}",
+                f"engine returned {response.status_code} for {path}: "
+                + _error_detail(response),
                 status=response.status_code,
             )
         try:
@@ -90,8 +90,15 @@ class UpstreamClient:
 
     # -- work ----------------------------------------------------------------
 
-    async def inspect(self, name: str, data: bytes) -> dict[str, Any]:
-        return await self._post("/inspect", _envelope(name, data))
+    async def inspect(
+        self, name: str, data: bytes, *, detect: bool = False
+    ) -> dict[str, Any]:
+        payload = _envelope(name, data)
+        if detect:
+            # v0.7.0: opt in to the configured watermark detectors. Off by
+            # default because each one is a model load, not a table lookup.
+            payload["detect"] = True
+        return await self._post("/inspect", payload)
 
     async def clean(
         self, name: str, data: bytes, options: dict[str, Any] | None = None
@@ -102,9 +109,11 @@ class UpstreamClient:
         return await self._post("/clean", payload)
 
     async def inspect_batch(
-        self, items: Sequence[tuple[str, bytes]], *, cap: int = 50
+        self, items: Sequence[tuple[str, bytes]], *, cap: int = 50, detect: bool = False
     ) -> list[dict[str, Any]]:
-        return await self._batch("/inspect/batch", items, None, cap)
+        return await self._batch(
+            "/inspect/batch", items, {"detect": True} if detect else None, cap
+        )
 
     async def clean_batch(
         self,
@@ -141,6 +150,25 @@ class UpstreamClient:
                 )
             results.extend(batch)
         return results
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """The engine's own explanation, not the JSON envelope carrying it.
+
+    Refusals come back as ``{"ok": false, "error": "..."}``, and since v0.7.0
+    that string is the whole reason a clean failed — "Layer B rewrite is
+    required for text cleaning", say. Pasting the raw body in front of the user
+    buries that sentence in braces, so pull it out when it is there.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("error") or payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()[:400]
+    return response.text.strip()[:400] or response.reason_phrase
 
 
 def _envelope(name: str, data: bytes) -> dict[str, Any]:

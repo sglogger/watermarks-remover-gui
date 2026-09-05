@@ -94,6 +94,8 @@ def main() -> int:
     text = f"Hello{ZWSP} world.{NBSP}Second{ZWSP} sentence."
     item = post_json("/api/scan/text", {"text": text, "format": "text"})["items"][0]
     print(f"   suspicious={item['suspicious']}  scan id={item['id']}")
+    for entry in item.get("evidence") or []:
+        print(f"   evidence: {entry['name']} ({entry.get('strength')})")
     spans = (item.get("highlight") or {}).get("spans", [])
     for span in spans:
         shown = repr(text[span["start"] : span["end"]])
@@ -102,10 +104,18 @@ def main() -> int:
 
     heading("3. Remove them, and verify the result is clean")
     cleaned = post_json("/api/clean", {"ids": [item["id"]], "options": {}})["items"][0]
-    print(f"   verified={cleaned['verified']}  remaining={cleaned['remaining_hits']}")
-    print(f"   result: {cleaned['text']!r}")
-    assert ZWSP not in cleaned["text"] and NBSP not in cleaned["text"]
-    assert cleaned["verified"] is True
+    if not cleaned["ok"]:
+        # Engine v0.7.0 made a Layer B rewrite mandatory for plain text, and the
+        # published engine image configures none. That is the expected state of
+        # a stock stack, so the demo reports it and carries on rather than
+        # failing: every other format below still cleans.
+        print("   plain-text cleaning is not configured on this engine:")
+        print(f"   {cleaned['error']}")
+    else:
+        print(f"   verified={cleaned['verified']}  remaining={cleaned['remaining_hits']}")
+        print(f"   result: {cleaned['text']!r}")
+        assert ZWSP not in cleaned["text"] and NBSP not in cleaned["text"]
+        assert cleaned["verified"] is True
 
     heading("4. Scan every example file")
     samples = sorted(
@@ -140,6 +150,9 @@ def main() -> int:
     if marked_ids:
         cleaned_files = post_json("/api/clean", {"ids": marked_ids, "options": {}})
         for entry in cleaned_files["items"]:
+            if not entry["ok"]:
+                print(f"   {entry['name']:<22} -> refused: {entry['error']}")
+                continue
             state = "verified clean" if entry["verified"] else "STILL FLAGGED"
             print(f"   {entry['name']:<22} -> {entry['cleaned_name']}  ({state})")
             for leftover in entry.get("remaining_findings", []):

@@ -26,13 +26,83 @@ import httpx
 REQUIRED_PATHS = ("/health", "/capabilities", "/inspect", "/clean")
 OPTIONAL_PATHS = ("/inspect/batch", "/clean/batch")
 
+#: Layer B rewrite tactics the engine knows, mirrored from its `rewrite_text`
+#: module. Kept here only to reject a typo before it becomes a 400: the engine
+#: validates the strategy itself and remains the authority.
+KNOWN_TACTICS = frozenset(
+    {"paraphrase", "backtranslate", "structural", "humanize", "code", "chunk", "mlm"}
+)
+
+#: Tactics that need an LLM behind `WATERMARKS_REWRITE_BACKEND`. `mlm` is the
+#: one exception: it infills locally with roberta-large, so it needs
+#: transformers inside the engine image instead.
+LLM_TACTICS = KNOWN_TACTICS - {"mlm"}
+
+
+class InvalidStrategy(ValueError):
+    """A rewrite strategy the engine would reject."""
+
+
+def parse_strategy(spec: str) -> list[tuple[str, float]]:
+    """Parse ``"paraphrase@0.8,mlm@0.2"`` into ``[(tactic, intensity)]``.
+
+    Mirrors the engine's own parser so a mistyped tactic is a message beside
+    the field rather than a failed clean. Intensity is exclusive of 0 and
+    inclusive of 1, exactly as upstream has it.
+    """
+    if not spec or not spec.strip():
+        raise InvalidStrategy("A strategy needs at least one tactic@intensity step.")
+    steps: list[tuple[str, float]] = []
+    for raw in spec.split(","):
+        item = raw.strip()
+        if "@" not in item:
+            raise InvalidStrategy(
+                f"{item or spec!r} is not a step; write it as tactic@intensity, "
+                "for example paraphrase@0.8."
+            )
+        tactic, _, raw_level = item.rpartition("@")
+        tactic = tactic.strip()
+        if tactic not in KNOWN_TACTICS:
+            raise InvalidStrategy(
+                f"{tactic!r} is not a tactic this engine knows. Available: "
+                + ", ".join(sorted(KNOWN_TACTICS))
+                + "."
+            )
+        try:
+            level = float(raw_level)
+        except ValueError:
+            raise InvalidStrategy(
+                f"{raw_level!r} is not a number; intensity runs from just above 0 to 1."
+            ) from None
+        if not 0 < level <= 1:
+            raise InvalidStrategy(
+                f"intensity {level} is out of range; it must be above 0 and at most 1."
+            )
+        steps.append((tactic, level))
+    return steps
+
+
+def strategy_needs_llm(spec: str) -> bool:
+    """True when *spec* has a step that requires an LLM rewrite backend."""
+    try:
+        steps = parse_strategy(spec)
+    except InvalidStrategy:
+        return False
+    return any(tactic in LLM_TACTICS for tactic, _ in steps)
+
+
 #: Clean options the UI offers today, with the safe default and a warning for
 #: the ones that can change content beyond the watermark itself.
 #:
-#: ``type`` is ``"bool"`` for a checkbox, or ``"choice"`` for a select backed by
-#: ``choices``. The engine has had string-valued options since v0.6.0
-#: (``deep_images``), so a boolean-only pipeline would either drop them or send
-#: a value the engine now rejects outright.
+#: ``type`` is ``"bool"`` for a checkbox, ``"choice"`` for a select backed by
+#: ``choices``, or ``"text"`` for a free-text string. The engine has had
+#: string-valued options since v0.6.0 (``deep_images``), so a boolean-only
+#: pipeline would either drop them or send a value the engine now rejects
+#: outright. v0.7.0 added two free-form string options — ``strategy`` and
+#: ``style`` — which is what ``"text"`` exists for.
+#:
+#: ``applies_to`` names the engine ``kind`` an option actually does anything
+#: for, so the UI can say so instead of implying it affects every upload.
 KNOWN_OPTIONS: dict[str, dict[str, Any]] = {
     "keep_non_ai_metadata": {
         "label": "Keep non-AI metadata",
@@ -47,6 +117,19 @@ KNOWN_OPTIONS: dict[str, dict[str, Any]] = {
         "type": "bool",
         "default": True,
         "risk": None,
+    },
+    "normalize_spaces": {
+        "label": "Normalise unusual spaces",
+        "help": (
+            "Fold non-breaking, thin and other exotic space characters down to "
+            "an ordinary space. On by default in the engine."
+        ),
+        "type": "bool",
+        "default": True,
+        "risk": (
+            "Turn this off for typography that relies on non-breaking spaces — "
+            "French punctuation, or a unit kept on the same line as its number."
+        ),
     },
     "deep_images": {
         "label": "PDF: reach metadata inside embedded images",
@@ -109,11 +192,75 @@ KNOWN_OPTIONS: dict[str, dict[str, Any]] = {
         "default": False,
         "risk": "Destroys copyright, camera and authorship information permanently.",
     },
+    # -- v0.7.0: Layer B statistical-mark rewriting ---------------------------
+    # Layer A edits characters; Layer B edits wording. Since v0.7.0 the engine
+    # runs Layer B on every plain-text clean and refuses the request outright
+    # when no strategy is configured, so this is not an optional extra for
+    # `.txt` — it is the thing that decides whether cleaning works at all.
+    "strategy": {
+        "label": "Rewrite strategy (plain text only)",
+        "help": (
+            "Statistical watermarks live in word choice, so removing them means "
+            "rewriting the prose. Steps are tactic@intensity, comma separated — "
+            "for example paraphrase@0.8,mlm@0.2. Leave this empty to use the "
+            "strategy the engine itself is configured with."
+        ),
+        "type": "text",
+        "default": "",
+        "placeholder": "paraphrase@0.8,mlm@0.2",
+        "risk": (
+            "Rewrites the wording of the document, not just its invisible "
+            "characters. The meaning is preserved; the sentences are not."
+        ),
+        "applies_to": "text",
+        #: Every tactic but `mlm` calls out to an LLM; `mlm` needs transformers
+        #: inside the engine image. Neither is present in the published build.
+        "tactics": sorted(KNOWN_TACTICS),
+    },
+    "style": {
+        "label": "Writing style for the rewrite",
+        "help": (
+            "A plain-language style instruction appended to the rewrite prompt, "
+            "e.g. 'plain and direct'. Most meaningful with the humanize tactic, "
+            "and only used by steps that call an LLM."
+        ),
+        "type": "text",
+        "default": "",
+        "placeholder": "plain and direct",
+        "applies_to": "text",
+    },
+    # -- v0.7.0: scoring the text before and after ----------------------------
+    "detect_before": {
+        "label": "Score the file before cleaning",
+        "help": (
+            "Run the configured watermark detectors over the original and "
+            "record the result in the report."
+        ),
+        "type": "bool",
+        "default": False,
+        "risk": None,
+        "requires_detector": True,
+    },
+    "detect_after": {
+        "label": "Score the file after cleaning",
+        "help": (
+            "Run the same detectors over the cleaned output, so the report "
+            "shows whether the score actually moved."
+        ),
+        "type": "bool",
+        "default": False,
+        "risk": None,
+        "requires_detector": True,
+    },
 }
 
-#: Options we never surface: they need optional heavy backends, or belong to the
-#: detection layers this GUI deliberately leaves out.
-HIDDEN_OPTIONS = {"remove_pixel", "detect_before", "detect_after"}
+#: Options we never surface. `remove_pixel` regenerates image pixels through
+#: CtrlRegen or MarkDiffusion, neither of which ships in the published engine
+#: image; `remove_audio_watermark` drives the v0.7.0 destructive audio chain,
+#: and audio is out of scope for this GUI (see `formats.sniff_av`). Listing
+#: them here is what stops the contract check from reporting them as options
+#: the UI forgot to add.
+HIDDEN_OPTIONS = {"remove_pixel", "remove_audio_watermark"}
 
 
 @dataclass
@@ -254,12 +401,48 @@ def coerce_option(spec: dict[str, Any], value: Any) -> Any:
     rejects the whole request when it sees a value outside the enum, where it
     used to quietly substitute its own default.
     """
-    if spec.get("type") == "choice":
+    kind = spec.get("type")
+    if kind == "choice":
         allowed = {choice["value"] for choice in spec.get("choices") or ()}
         if isinstance(value, str) and value in allowed:
             return value
         return spec["default"]
+    if kind == "text":
+        return value.strip() if isinstance(value, str) else spec["default"]
     return bool(value)
+
+
+def validate_options(values: dict[str, Any]) -> list[tuple[str, str]]:
+    """Problems with *values* the user can fix, as ``(option name, message)``.
+
+    Only the strategy has a grammar worth checking here. Everything else is a
+    checkbox or a closed enum, and `coerce_option` has already made those safe.
+    The option name comes back with the message so the caller can reset exactly
+    the field that failed, without matching on prose.
+    """
+    problems: list[tuple[str, str]] = []
+    strategy = values.get("strategy")
+    if isinstance(strategy, str) and strategy.strip():
+        try:
+            parse_strategy(strategy)
+        except InvalidStrategy as exc:
+            problems.append(("strategy", f"Rewrite strategy: {exc}"))
+    return problems
+
+
+def engine_options(values: dict[str, Any]) -> dict[str, Any]:
+    """The subset of *values* to actually put on the wire.
+
+    An empty text option means "leave it to the engine", but the engine does
+    not read it that way: it validates `strategy` whenever the key is present,
+    and an empty string fails that check with a 400. So empty strings are
+    dropped rather than sent.
+    """
+    return {
+        name: value
+        for name, value in values.items()
+        if not (isinstance(value, str) and not value.strip())
+    }
 
 
 @dataclass

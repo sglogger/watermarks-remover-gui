@@ -303,6 +303,55 @@ button.small { padding: 5px 11px; font-size: .8125rem; }
 .option-choice .help, .option-choice .risk { grid-column: 1 / -1; }
 .option-choice .choice-help:empty { display: none; }
 
+/* A free-text option (the v0.7.0 rewrite strategy and style) needs the full
+   width for its value, so the field sits on its own row under the label
+   rather than beside it. */
+.option-text { grid-template-columns: 1fr; }
+.option-text > label { grid-column: 1; }
+.option-text > input[type="text"] {
+  grid-column: 1;
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: .875rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.option-text > input[type="text"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.option-text .help, .option-text .risk { grid-column: 1; }
+
+/* ------------------------------------------------------------- evidence */
+
+/* The engine reports several kinds of evidence with different strengths;
+   the list keeps them visually separate so a heuristic score never reads
+   like an observed provenance marker. */
+.evidence {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.evidence-title {
+  margin: 0 0 8px;
+  font-size: .8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.evidence-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.evidence-list > li { display: grid; gap: 2px; }
+.evidence-name { font-size: .875rem; font-weight: 500; }
+.evidence-strength {
+  font-size: .75rem;
+  color: var(--text-muted);
+}
+.evidence-list .help { margin: 0; font-size: .8125rem; color: var(--text-muted); }
+
 /* -------------------------------------------------------------- dropzone */
 
 .dropzone {

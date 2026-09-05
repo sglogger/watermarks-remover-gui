@@ -18,6 +18,7 @@ import io
 import json
 import logging
 import os
+import re
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -140,6 +141,16 @@ def _sanitize_options(raw: Any, status: ContractStatus) -> dict[str, Any]:
     filtering here is what keeps the UI working across upstream releases that
     add or drop options.
     """
+    return _prepare_options(raw, status)[0]
+
+
+def _prepare_options(raw: Any, status: ContractStatus) -> tuple[dict[str, Any], list[str]]:
+    """Sanitize *raw*, and report anything the user typed that will not fly.
+
+    A bad rewrite strategy is dropped rather than forwarded: the engine would
+    answer 400 for the whole request, where falling back to its configured
+    default still cleans the file and leaves us a warning to show.
+    """
     specs = {opt["name"]: opt for opt in contract.ui_options(status)}
     out = contract.default_options(status)
     if isinstance(raw, dict):
@@ -147,7 +158,90 @@ def _sanitize_options(raw: Any, status: ContractStatus) -> dict[str, Any]:
             spec = specs.get(key)
             if spec is not None:
                 out[key] = contract.coerce_option(spec, value)
+    messages: list[str] = []
+    for name, message in contract.validate_options(out):
+        # Reset whatever failed to its default so the request still goes out on
+        # the engine's own setting rather than being refused wholesale.
+        if name in out and name in specs:
+            out[name] = specs[name]["default"]
+        messages.append(message)
+    return out, messages
+
+
+#: Evidence classes in the order the engine ranks them, strongest first, so a
+#: definitive provenance marker is never listed under a heuristic score.
+_EVIDENCE_ORDER = ("provenance", "layer_a_unicode", "watermark_detector", "stylometry")
+
+
+def suspicious_verdict(payload: Any) -> bool:
+    """The engine's yes/no answer, whichever shape it came in.
+
+    Up to v0.6.0 `suspicious` was a boolean. v0.7.0 replaced it with an
+    evidence object — ``{"verdict": ..., "classes": {...}}`` — to stop callers
+    treating four very different signals as one. A dict is always truthy, so
+    reading the new shape with `bool()` silently marks every file as
+    watermarked and every cleaned file as unverified; both shapes are handled
+    here so the answer stays the engine's, not Python's.
+    """
+    if isinstance(payload, dict):
+        return bool(payload.get("verdict"))
+    return bool(payload)
+
+
+def evidence_classes(payload: Any) -> list[dict[str, Any]] | None:
+    """The classes that fired, strongest first. None on a pre-v0.7.0 engine."""
+    if not isinstance(payload, dict):
+        return None
+    classes = payload.get("classes")
+    if not isinstance(classes, dict):
+        return None
+    ranked = sorted(
+        classes.items(),
+        key=lambda kv: _EVIDENCE_ORDER.index(kv[0])
+        if kv[0] in _EVIDENCE_ORDER
+        else len(_EVIDENCE_ORDER),
+    )
+    out: list[dict[str, Any]] = []
+    for name, body in ranked:
+        if not isinstance(body, dict) or not body.get("present"):
+            continue
+        out.append(
+            {
+                "name": name,
+                "strength": body.get("strength"),
+                "description": body.get("description"),
+                "signals": body.get("signals") if isinstance(body.get("signals"), dict) else {},
+            }
+        )
     return out
+
+
+#: The engine's refusal when text cleaning has no Layer B rewrite behind it.
+#: Matched on the stable part of the sentence, not the whole string.
+_LAYER_B_MARKER = "Layer B"
+
+#: "engine returned 400 for /clean: " — true, and in the way. The sentence
+#: after it is the part a reader can act on, so it leads.
+_TRANSPORT_PREFIX = re.compile(r"^engine returned \d+ for /\S+:\s*")
+
+
+def _friendly_error(detail: str) -> str:
+    """Turn the engine's refusal into something with a next step in it.
+
+    Only Layer B gets this treatment: it is the one failure a correctly
+    installed engine still produces out of the box, because the published
+    image carries no strategy config, no transformers and no LLM backend.
+    """
+    if _LAYER_B_MARKER not in detail:
+        return detail
+    detail = _TRANSPORT_PREFIX.sub("", detail)
+    return (
+        f"{detail} — cleaning plain text needs the engine's Layer B rewrite, "
+        "which the published engine image does not configure. Set "
+        "WATERMARKS_REWRITE_BACKEND (with model and base URL) on the engine, "
+        "or give it a strategy config; see the README. Markdown, HTML, PDF, "
+        "Office and image files clean without it."
+    )
 
 
 def _report_hits(report: Any, _depth: int = 0) -> int | None:
@@ -272,7 +366,7 @@ async def _scan_payloads(
 
     inspect_pairs = [(name, data) for _, name, data, _ in accepted]
     try:
-        reports = await _inspect_all(client, inspect_pairs, status, settings)
+        reports = await _inspect_all(client, inspect_pairs, status, settings, options)
     except UpstreamError as exc:
         for slot, name, _, _ in accepted:
             items[slot].ok = False
@@ -289,7 +383,8 @@ async def _scan_payloads(
             item.error = str(report.get("error") or "the engine could not process this file")
             continue
         item.kind = str(report.get("kind") or info.kind)
-        item.suspicious = bool(report.get("suspicious"))
+        item.suspicious = suspicious_verdict(report.get("suspicious"))
+        item.evidence = evidence_classes(report.get("suspicious"))
         item.report = report.get("report")
         item.id = cache.put(
             ScanEntry(
@@ -306,8 +401,18 @@ async def _scan_payloads(
         # characters, so a Markdown file full of zero-width spaces comes back
         # "not suspicious" while /clean happily strips eight of them. The clean
         # output is the only complete answer, so ask for it either way.
+        #
+        # Except for plain text. Engine v0.7.0 made the Layer B rewrite a
+        # mandatory part of cleaning anything it classifies as `text`, so this
+        # scan-time call would either be refused outright or spend an LLM
+        # paraphrase of the whole document on a preview — and come back with a
+        # diff of the entire file rather than the watermark. Those are read
+        # straight from the inspect report instead.
         if info.highlightable and _as_text(data) is not None:
-            clean_targets.append((slot, name, data))
+            if item.kind == "text":
+                _highlight_from_report(item, data)
+            else:
+                clean_targets.append((slot, name, data))
         if scanner.wanted(info.ext):
             meta_targets.append((slot, name, data))
 
@@ -344,7 +449,9 @@ async def _scan_payloads(
             item = items[slot]
             if not result.get("ok", True):
                 warnings.append(
-                    f"{name}: positions unavailable ({result.get('error') or 'clean failed'})."
+                    f"{name}: positions unavailable ("
+                    + _friendly_error(str(result.get("error") or "clean failed"))
+                    + ")."
                 )
                 continue
             try:
@@ -383,15 +490,39 @@ async def _scan_payloads(
     return items, warnings
 
 
+def _highlight_from_report(item: ScanItem, data: bytes) -> None:
+    """Mark a plain-text file's carriers using only what /inspect reported."""
+    original_text = _as_text(data)
+    if original_text is None:
+        return
+    highlight = diffmark.from_report(original_text, _report_hit_list(item.report))
+    if not highlight.spans:
+        return
+    diffmark.to_utf16_offsets(original_text, highlight.spans)
+    item.highlight = highlight.to_dict()
+    # The report named these code points, so the file is marked whatever the
+    # top-level verdict said — the same reasoning the diff path uses.
+    item.suspicious = True
+    if len(data) <= MAX_INLINE_TEXT_BYTES:
+        item.text = original_text
+
+
 async def _inspect_all(
     client: UpstreamClient,
     pairs: Sequence[tuple[str, bytes]],
     status: ContractStatus,
     settings: Settings,
+    options: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    # v0.7.0 put the watermark detectors behind an explicit `detect` flag on
+    # /inspect. "Score before cleaning" is the option that asks for them, so it
+    # is what turns them on here too.
+    detect = bool((options or {}).get("detect_before"))
     if status.batch_supported and len(pairs) > 1:
-        return await client.inspect_batch(pairs, cap=settings.core_batch_cap)
-    return [await client.inspect(name, data) for name, data in pairs]
+        return await client.inspect_batch(
+            pairs, cap=settings.core_batch_cap, detect=detect
+        )
+    return [await client.inspect(name, data, detect=detect) for name, data in pairs]
 
 
 async def _clean_all(
@@ -401,9 +532,13 @@ async def _clean_all(
     status: ContractStatus,
     settings: Settings,
 ) -> list[dict[str, Any]]:
+    # An empty `strategy` means "use the engine's own default", but the engine
+    # validates the key whenever it is present and rejects the empty string, so
+    # blank text options are dropped rather than sent.
+    payload = contract.engine_options(options)
     if status.batch_supported and len(pairs) > 1:
-        return await client.clean_batch(pairs, options, cap=settings.core_batch_cap)
-    return [await client.clean(name, data, options) for name, data in pairs]
+        return await client.clean_batch(pairs, payload, cap=settings.core_batch_cap)
+    return [await client.clean(name, data, payload) for name, data in pairs]
 
 
 # ---------------------------------------------------------------------------
@@ -520,10 +655,11 @@ def _register_routes(app: FastAPI) -> None:
                 ],
             )
 
-        options = _sanitize_options(payload.options, status)
+        options, problems = _prepare_options(payload.options, status)
         items, warnings = await _scan_payloads(
             app, [(filename, text.encode("utf-8"))], options
         )
+        warnings = problems + warnings
         # The browser already holds the text it just sent; no need to echo it.
         for item in items:
             item.text = None
@@ -552,7 +688,8 @@ def _register_routes(app: FastAPI) -> None:
         except ValueError:
             parsed_options = {}
             warnings.append("Options could not be read; safe defaults were used.")
-        clean_options = _sanitize_options(parsed_options, status)
+        clean_options, problems = _prepare_options(parsed_options, status)
+        warnings.extend(problems)
 
         payloads: list[tuple[str, bytes]] = []
         rejected: list[ScanItem] = []
@@ -577,9 +714,9 @@ def _register_routes(app: FastAPI) -> None:
         status: ContractStatus = app.state.contract
         settings: Settings = app.state.settings
 
-        options = _sanitize_options(payload.options, status)
+        options, problems = _prepare_options(payload.options, status)
         items: list[CleanItem] = []
-        warnings: list[str] = []
+        warnings: list[str] = list(problems)
 
         pending: list[tuple[int, str, ScanEntry]] = []
         verify_targets: list[tuple[int, str, bytes]] = []
@@ -613,15 +750,15 @@ def _register_routes(app: FastAPI) -> None:
             except UpstreamError as exc:
                 for slot, _, _ in pending:
                     items[slot].ok = False
-                    items[slot].error = str(exc)
+                    items[slot].error = _friendly_error(str(exc))
                 results = []
 
             for (slot, scan_id, entry), result in zip(pending, results):
                 item = items[slot]
                 if not result.get("ok", True):
                     item.ok = False
-                    item.error = str(
-                        result.get("error") or "the engine could not clean this file"
+                    item.error = _friendly_error(
+                        str(result.get("error") or "the engine could not clean this file")
                     )
                     continue
                 try:
@@ -653,7 +790,8 @@ def _register_routes(app: FastAPI) -> None:
                 checks = []
             for (slot, _, _), check in zip(verify_targets, checks):
                 item = items[slot]
-                item.verified = not bool(check.get("suspicious"))
+                item.verified = not suspicious_verdict(check.get("suspicious"))
+                item.evidence = evidence_classes(check.get("suspicious"))
                 item.remaining_hits = _report_hits(check.get("report"))
                 if not item.verified:
                     item.remaining_findings = _report_findings(check.get("report"))

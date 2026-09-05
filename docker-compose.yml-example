@@ -16,7 +16,7 @@ name: watermarks-remover-gui
 services:
   # Upstream engine. Referenced by image only: no build context, no source.
   wr-core:
-    image: ghcr.io/guillaumemeyer/watermarks-remover:${WR_CORE_TAG:-v0.6.0}
+    image: ghcr.io/guillaumemeyer/watermarks-remover:${WR_CORE_TAG:-v0.7.0}
     # Upstream publishes linux/amd64 only, so Apple Silicon and other arm64
     # hosts run it emulated. Harmless on amd64 hosts; clear WR_CORE_PLATFORM
     # once upstream ships a native arm64 image.
@@ -24,6 +24,25 @@ services:
     environment:
       WATERMARKS_SERVER_API_KEY: ${WATERMARKS_SERVER_API_KEY:-}
       WATERMARKS_MAX_BATCH_FILES: ${WATERMARKS_MAX_BATCH_FILES:-50}
+      # Layer B, required by v0.7.0 to clean plain text and unused by every
+      # other format. Empty by default, which is the published image's own
+      # state: the GUI then says what to configure instead of failing blankly.
+      WATERMARKS_REWRITE_BACKEND: ${WATERMARKS_REWRITE_BACKEND:-}
+      WATERMARKS_REWRITE_BASE_URL: ${WATERMARKS_REWRITE_BASE_URL:-}
+      WATERMARKS_REWRITE_MODEL: ${WATERMARKS_REWRITE_MODEL:-}
+      WATERMARKS_REWRITE_API_KEY: ${WATERMARKS_REWRITE_API_KEY:-}
+      # The engine will not talk to a non-loopback rewrite endpoint without
+      # this, so that document text cannot leave the host by accident. From
+      # inside the container your own host is NOT loopback, so reaching an
+      # Ollama on this machine needs it set to 1.
+      WATERMARKS_REWRITE_ALLOW_REMOTE: ${WATERMARKS_REWRITE_ALLOW_REMOTE:-}
+      WATERMARKS_REWRITE_TEMPERATURE: ${WATERMARKS_REWRITE_TEMPERATURE:-}
+      WATERMARKS_CLEAN_STRATEGY_FILE: ${WATERMARKS_CLEAN_STRATEGY_FILE:-/app/config/clean_strategy.json}
+    # The engine image carries no strategy config of its own, so the default
+    # Layer B strategy is mounted in read-only. Without a rewrite backend set
+    # above it changes nothing — the engine still has no LLM to run it with.
+    volumes:
+      - ./config/clean_strategy.json:/app/config/clean_strategy.json:ro
     # Not published to the host: only wr-gui needs to reach it. Add a
     # `ports: ["127.0.0.1:8765:8765"]` mapping if you want to curl it directly.
     expose:
@@ -49,6 +68,9 @@ services:
       GUI_RATE_LIMIT_PER_MIN: ${GUI_RATE_LIMIT_PER_MIN:-0}
       GUI_MAX_UPLOAD_MB: ${GUI_MAX_UPLOAD_MB:-32}
       GUI_MAX_FILES: ${GUI_MAX_FILES:-25}
+      GUI_EXIFTOOL: ${GUI_EXIFTOOL:-0}
+      GUI_EXIFTOOL_TIMEOUT: ${GUI_EXIFTOOL_TIMEOUT:-20}
+      GUI_EXIFTOOL_MAX_MB: ${GUI_EXIFTOOL_MAX_MB:-32}
       GUI_CACHE_TTL: ${GUI_CACHE_TTL:-600}
       GUI_CACHE_MAX_MB: ${GUI_CACHE_MAX_MB:-256}
       GUI_UPDATE_CHECK: ${GUI_UPDATE_CHECK:-1}

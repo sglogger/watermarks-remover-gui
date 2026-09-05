@@ -6,9 +6,9 @@ exist so you can watch the scanner find something and then verify it is gone.
 The counts below were measured, not estimated, and the last column is what the
 engine actually did with each file — including where it did nothing.
 
-| File | What it carries | Result against engine v0.6.0 |
+| File | What it carries | Result against engine v0.7.0 |
 | --- | --- | --- |
-| `sample-marked.md` | 8 invisible characters: 3× zero-width space, 2× no-break space, and one each of zero-width non-joiner, left-to-right mark and word joiner | all 8 reported, 7 removed; **stays flagged** on the left-to-right mark, which v0.6.0 keeps on purpose as load-bearing |
+| `sample-marked.md` | 8 invisible characters: 3× zero-width space, 2× no-break space, and one each of zero-width non-joiner, left-to-right mark and word joiner | all 8 reported, 7 removed; **stays flagged** on the left-to-right mark, which the engine keeps on purpose as load-bearing |
 | `sample-marked.html` | 3 invisible characters (one written as the HTML entity `&#8203;`) plus an AI `<meta name="generator">` tag | 3 hidden characters and 1 marked block; verified clean |
 | `sample-marked.svg` | AI creator metadata in a `<metadata>` block, plus 2 invisible characters in the markup | 1 marked block removed; verified clean. **The 2 invisible characters are left in place and are not reported at all** — the engine's SVG pipeline still handles metadata but not Layer A text |
 | `sample-marked.png` | PNG `tEXt` chunks naming an AI image tool (generated, see below) | metadata stripped; verified clean |
@@ -23,8 +23,16 @@ behind on purpose, while the SVG is reported as clean when two characters were
 left behind without a word. Only the first of those is something the app can
 tell you about — see the engine limitations section in the main README.
 
-Measured against engine v0.6.0 on 2026-08-27. The v0.5.0 column this table used
-to carry is preserved in the repository history.
+**Plain text is the one format you may not be able to clean.** Engine v0.7.0
+made a Layer B rewrite mandatory for `.txt` and for the Plain text box, and the
+published engine image configures none, so `Remove` there reports what to set
+instead of producing a file. Scanning plain text is unaffected, and every other
+file in the table above cleans normally. See "Cleaning plain text needs a rewrite
+backend" in the main README.
+
+Re-measured against engine v0.7.0 on 2026-09-05, and unchanged from v0.6.0 in
+every row. The v0.5.0 column this table used to carry is preserved in the
+repository history.
 
 The two binary files are generated rather than committed, so this repository
 carries no opaque blobs:

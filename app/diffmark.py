@@ -191,6 +191,66 @@ def build_char_index(hits: Iterable[Any]) -> dict[int, tuple[str, str]]:
     return index
 
 
+#: Hit kinds the engine substitutes rather than deletes. Everything else in a
+#: Layer A report is stripped outright. Only used to colour the span, so a
+#: future kind we have not seen simply reads as "removed".
+_REPLACED_KINDS = frozenset({"space", "confusable"})
+
+
+def from_report(text: str, hits: Iterable[Any]) -> HighlightResult:
+    """Mark every character the inspect report named, without cleaning first.
+
+    The diff-based :func:`highlight` is the better answer wherever it can be
+    had, because it shows exactly what cleaning will do. It cannot be had for
+    plain text any more: engine v0.7.0 made the Layer B rewrite a mandatory
+    part of cleaning text, so asking for cleaned bytes now means paying for an
+    LLM to paraphrase the document — and the resulting diff would be the whole
+    file, not the watermark.
+
+    So for plain text we go back to the report and find the reported code
+    points ourselves. The report caps its own ``sample_offsets`` at ten per
+    bucket, but it names each code point, and scanning the text for those is
+    exact and complete. The one thing it cannot know is which occurrences the
+    engine will spare as load-bearing (emoji glue, script joiners), so this is
+    what inspection found, not a preview of what cleaning will remove.
+    """
+    index = build_char_index(hits)
+    if not index:
+        return HighlightResult(spans=[])
+
+    spans: list[Span] = []
+    for position, char in enumerate(text):
+        entry = index.get(ord(char))
+        if entry is None:
+            continue
+        kind, label = entry
+        action = "replaced" if kind in _REPLACED_KINDS else "removed"
+        previous = spans[-1] if spans else None
+        # Runs of the same character read as one finding, the way the diff
+        # walker already merges them.
+        if (
+            previous is not None
+            and previous.end == position
+            and previous.kind == kind
+            and previous.label == label
+        ):
+            previous.end = position + 1
+            previous.text += char
+            previous.chars += 1
+            continue
+        spans.append(
+            Span(
+                start=position,
+                end=position + 1,
+                action=action,
+                kind=kind,
+                label=label,
+                text=char,
+            )
+        )
+    return HighlightResult(spans=spans)
+
+
 def _is_carrier(char: str) -> bool:
     """True for characters that cannot be seen, and so can only be a carrier.
 
