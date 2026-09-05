@@ -48,8 +48,8 @@ def test_an_invisible_character_missing_from_the_report_is_still_a_carrier():
 def test_removed_visible_markup_becomes_one_region_not_one_span_per_character():
     # This is what an SVG <metadata> block or an AI <meta generator> tag looks
     # like after cleaning: a long run of ordinary, readable characters.
-    original = '<p>hi</p>\n<meta name="generator" content="Claude">\n<p>bye</p>'
-    cleaned = original.replace('<meta name="generator" content="Claude">\n', "")
+    original = '<p>hi</p>\n<meta name="generator" content="ChatGPT">\n<p>bye</p>'
+    cleaned = original.replace('<meta name="generator" content="ChatGPT">\n', "")
     result = diffmark.highlight(original, cleaned, [])
     assert len(result.spans) == 1
     assert result.spans[0].kind == diffmark.BLOCK_KIND
