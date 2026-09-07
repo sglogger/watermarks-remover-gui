@@ -322,7 +322,7 @@ Because two version numbers are in play and they are easy to confuse, the footer
 labels them rather than running them together:
 
 ```
-This app   watermarks-remover-gui v1.2.0 · by Steven Glogger
+This app   watermarks-remover-gui v1.2.5 · by Steven Glogger
 Engine     watermarks-remover v0.7.0 · up to date · http://wr-core:8765
 ```
 
@@ -435,8 +435,10 @@ keep. Measured against v0.6.0: a PNG carrying EXIF, XMP and PNG text chunks
 comes back with EXIF and GPS gone but `PNG:Author`, `PNG:Artist`,
 `PNG:Copyright`, `PNG:Software`, `XMP:CreatorTool` and `XMP:XMPToolkit` intact —
 and the engine's own re-inspection reports `findings: []`, i.e. verified clean.
-With the check on, that file is reported as **still flagged**, naming each
-surviving tag.
+Ask for **Strip all metadata** and that file is reported as **still flagged**,
+naming each surviving tag. Under the default options those same survivors are
+what was asked for, so the removal passes; the tags are still listed, just not
+as a failure.
 
 The trade is deliberate: this runs a third-party binary over untrusted uploads,
 which is work the engine otherwise isolates inside its own container, and
@@ -455,6 +457,24 @@ A memfd is seekable, so the container is read in full. The image also installs
 open a ZIP container at all. Off Linux the pipe fallback applies and ZIP-based
 formats stay shallow; the engine's own exiftool lines still show up in the
 results either way.
+
+### Everything that was read, in one place
+
+Under the scan verdict sits an **All metadata found** dropdown listing every
+metadata tag either pass read, grouped by file. Two sources end up there, kept
+apart and labelled, because they do not always agree:
+
+- the engine's own exiftool lines, which it carries in its report as
+  pre-formatted console text (`[XMP-dc]        Creator : …`) and which are split
+  back into tag and value here — these are present whether or not the local
+  check is on;
+- the local pass, when `GUI_EXIFTOOL=1`, which reads far more and says of each
+  identifying tag why it was flagged.
+
+The same data has always been in each file row, but only for the row you happen
+to open. A "no watermarks found" verdict still leaves the question of what the
+files say about their author, tooling and origin, and this answers it in one
+click — for the whole batch, without opening anything.
 
 ---
 

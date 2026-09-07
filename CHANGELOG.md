@@ -11,6 +11,18 @@ its own releases and its own changelog; the version this stack runs is pinned by
 
 ## [Unreleased]
 
+## [1.2.5] — 2026-09-07
+
+Engine pin unchanged (`WR_CORE_TAG=v0.7.0`).
+
+A release about the local metadata check, which turned out to be answering
+confidently and wrongly in both directions. It could not read a single Office
+document — every DOCX, XLSX, PPTX, ODT and EPUB came back as a bare ZIP — and
+what it did read, it over-called: an author name in a Word file was reported as
+a watermark. Both are fixed, the two kinds of finding are now told apart
+everywhere they are shown, and the batch-wide metadata view that exposed all of
+this is new here too.
+
 ### Fixed
 
 - **The local metadata check was blind to every Office document.** DOCX, XLSX,
