@@ -521,6 +521,26 @@ mark.hl .ghost-glyph {
 .metascan .kv { margin-top: 6px; }
 .metascan .kv dt { overflow-wrap: anywhere; }
 
+/* Same data as the per-file metadata sections, gathered for the whole batch so
+   a clean verdict can still be checked against what the files actually say. */
+.meta-digest > summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.meta-digest-body {
+  margin-top: 8px; max-height: 440px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 4px 12px 12px;
+}
+.meta-digest-file + .meta-digest-file {
+  margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border);
+}
+.meta-digest-name {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 12px 0 0; font-size: .875rem; font-weight: 600; overflow-wrap: anywhere;
+}
+.meta-digest-tool { font-weight: 400; font-size: .8125rem; color: var(--text-muted); }
+.meta-digest .kv dt { overflow-wrap: anywhere; }
+.meta-flagged { display: flex; flex-direction: column; color: var(--warn); }
+.meta-reason { font-size: .75rem; color: var(--text-muted); }
+
 /* --------------------------------------------------------------- overlay */
 
 .overlay {

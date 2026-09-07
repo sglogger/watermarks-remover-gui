@@ -11,6 +11,15 @@ its own releases and its own changelog; the version this stack runs is pinned by
 
 ## [Unreleased]
 
+### Added
+
+- **A batch-wide metadata dropdown in the file results.** Directly under the
+  scan verdict, "All metadata found" lists every tag the local metadata pass
+  read, grouped by file, with the identifying ones marked and their reason
+  shown. The same tags were already in each file row, but only for the row you
+  opened — and a "no watermarks found" verdict still leaves the question of
+  what the files actually say about their author, tooling and origin.
+
 ## [1.2.0] — 2026-09-05
 
 Follows engine [v0.7.0](https://github.com/guillaumemeyer/watermarks-remover/releases/tag/v0.7.0).

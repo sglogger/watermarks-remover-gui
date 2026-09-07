@@ -1036,6 +1036,9 @@ function renderFileResults(warnings) {
       : 'No files could be scanned.';
   card.appendChild(summaryLine(marked.length ? 'found' : failed.length === items.length ? 'error' : 'clean', headline));
 
+  const digest = renderMetadataDigest(items);
+  if (digest) card.appendChild(digest);
+
   const list = el('div', 'file-list');
   items.forEach((item, index) => list.appendChild(renderFileRow(item, index)));
   card.appendChild(list);
@@ -1048,6 +1051,89 @@ function renderFileResults(warnings) {
     actions.appendChild(button);
     card.appendChild(actions);
   }
+}
+
+// Every tag the local metadata pass read, from every file in the batch, in one
+// place. The per-file rows below hold the same data, but only for the row you
+// happen to open; a watermark-free verdict still leaves the question "what is
+// actually written in these files?", and this answers it in one click.
+function renderMetadataDigest(items) {
+  const scanned = items.filter((item) => item.ok && item.metadata_scan);
+  if (!scanned.length) return null;
+
+  let flaggedTotal = 0;
+  let tagTotal = 0;
+  let failedScans = 0;
+  for (const item of scanned) {
+    const scan = item.metadata_scan;
+    if (!scan.ok) failedScans += 1;
+    flaggedTotal += (scan.flagged || []).length;
+    tagTotal += (scan.flagged || []).length + (scan.other || []).length;
+  }
+  if (!tagTotal && !failedScans) return null;
+
+  const block = el('details', 'report-block meta-digest');
+  const summary = el('summary');
+  summary.appendChild(el('span', null,
+    `All metadata found (${plural(tagTotal, 'tag')} in ${plural(scanned.length, 'file')})`));
+  if (flaggedTotal) {
+    summary.appendChild(el('span', 'badge badge-found', `${flaggedTotal} identifying`));
+  }
+  block.appendChild(summary);
+
+  const body = el('div', 'meta-digest-body');
+  for (const item of scanned) {
+    const scan = item.metadata_scan;
+    const group = el('section', 'meta-digest-file');
+    const title = el('h5', 'meta-digest-name');
+    title.appendChild(el('span', null, item.name));
+    const tool = `${scan.tool || 'exiftool'}${scan.version ? ' ' + scan.version : ''}`;
+    title.appendChild(el('span', 'meta-digest-tool', tool));
+    group.appendChild(title);
+
+    if (!scan.ok) {
+      group.appendChild(el('p', 'muted', scan.error || 'The metadata check did not run.'));
+      body.appendChild(group);
+      continue;
+    }
+
+    const flagged = scan.flagged || [];
+    const other = scan.other || [];
+    if (flagged.length) {
+      const list = el('dl', 'kv');
+      for (const entry of flagged) {
+        const term = el('dt', 'meta-flagged');
+        term.appendChild(el('span', null, entry.tag));
+        term.appendChild(el('span', 'meta-reason', entry.reason));
+        list.appendChild(term);
+        list.appendChild(el('dd', null, entry.value));
+      }
+      group.appendChild(list);
+    }
+    if (other.length) {
+      const list = el('dl', 'kv');
+      for (const entry of other) {
+        list.appendChild(el('dt', null, entry.tag));
+        list.appendChild(el('dd', null, entry.value));
+      }
+      group.appendChild(list);
+    }
+    if (!flagged.length && !other.length) {
+      group.appendChild(el('p', 'muted', 'No metadata found in this file.'));
+    }
+    if (scan.truncated) group.appendChild(el('p', 'muted', 'The tag list was truncated.'));
+    if (scan.ok && scan.error) group.appendChild(el('p', 'muted', scan.error));
+    body.appendChild(group);
+  }
+
+  const unchecked = items.filter((item) => item.ok && !item.metadata_scan).length;
+  if (unchecked) {
+    body.appendChild(el('p', 'muted',
+      `${plural(unchecked, 'file')} not covered: the metadata check only reads formats that ` +
+      'can carry container metadata.'));
+  }
+  block.appendChild(body);
+  return block;
 }
 
 function renderFileRow(item, index) {
