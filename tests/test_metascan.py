@@ -7,7 +7,10 @@ classification and summarising logic always runs.
 from __future__ import annotations
 
 import asyncio
+import io
+import os
 import shutil
+import zipfile
 
 import pytest
 
@@ -19,7 +22,7 @@ HAS_EXIFTOOL = shutil.which("exiftool") is not None
 needs_exiftool = pytest.mark.skipif(not HAS_EXIFTOOL, reason="exiftool is not installed")
 
 
-def make_pdf() -> bytes:
+def make_pdf(producer: str = "SecretTool 9000") -> bytes:
     """A minimal but valid PDF whose Info dictionary identifies its author."""
     objs = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -28,7 +31,9 @@ def make_pdf() -> bytes:
     ]
     stream = b"BT /F1 12 Tf 20 100 Td (Hello) Tj ET"
     objs.append(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
-    objs.append(b"<< /Producer (SecretTool 9000) /Author (Jo) /Keywords (mark-1234) >>")
+    objs.append(
+        b"<< /Producer (" + producer.encode() + b") /Author (Jo) /Keywords (mark-1234) >>"
+    )
 
     out = b"%PDF-1.4\n"
     offsets = []
@@ -46,6 +51,60 @@ def make_pdf() -> bytes:
     return out
 
 
+def make_docx(creator: str = "Francesco Caiafa") -> bytes:
+    """A minimal but valid DOCX whose core properties name an author.
+
+    Only the parts exiftool needs to recognise the container and read its
+    metadata: the content-types map that makes it a DOCX rather than a bare
+    ZIP, and the core properties it maps onto XMP-dc tags.
+    """
+    core = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<cp:coreProperties '
+        'xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        f"<dc:title>Briefing</dc:title><dc:creator>{creator}</dc:creator>"
+        "</cp:coreProperties>"
+    )
+    types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.'
+        'openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.'
+        'openxmlformats-package.core-properties+xml"/>'
+        "</Types>"
+    )
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", types)
+        archive.writestr("word/document.xml", document)
+        archive.writestr("docProps/core.xml", core)
+    return buffer.getvalue()
+
+
+def reads_zip_containers() -> bool:
+    """Whether this machine's exiftool can open a ZIP container at all.
+
+    It needs Archive::Zip, a Perl module exiftool only recommends. Without it
+    a DOCX reads as a bare ZIP, and the tests that depend on the difference
+    would be asserting the environment rather than the code.
+    """
+    if not HAS_EXIFTOOL:
+        return False
+    scanner = metascan.MetaScanner(enabled=True)
+    asyncio.run(scanner.probe())
+    result = asyncio.run(scanner.scan("probe.docx", make_docx()))
+    tags = {entry["tag"] for entry in result["flagged"] + result["other"]}
+    return "File:FileType" not in tags or any(tag.startswith("XMP") for tag in tags)
+
+
 # -- classification ---------------------------------------------------------
 
 
@@ -61,6 +120,10 @@ def make_pdf() -> bytes:
         "MakerNotes:SerialNumber",
         "EXIF:Model",
         "PDF:Keywords",
+        # OOXML, and only readable at all since exiftool got a seekable input.
+        "XML:LastModifiedBy",
+        "XML:Company",
+        "XML:Application",
     ],
 )
 def test_identifying_tags_are_flagged(tag):
@@ -69,7 +132,15 @@ def test_identifying_tags_are_flagged(tag):
 
 @pytest.mark.parametrize(
     "tag",
-    ["EXIF:ExposureTime", "PDF:PageCount", "File:MIMEType", "PNG:BitDepth", "EXIF:ImageWidth"],
+    [
+        "EXIF:ExposureTime",
+        "PDF:PageCount",
+        "File:MIMEType",
+        "PNG:BitDepth",
+        "EXIF:ImageWidth",
+        # A record-format version number, not the program that wrote the file.
+        "IPTC:ApplicationRecordVersion",
+    ],
 )
 def test_harmless_tags_are_not_flagged(tag):
     assert metascan.classify_tag(tag) is None
@@ -77,8 +148,53 @@ def test_harmless_tags_are_not_flagged(tag):
 
 def test_a_tool_name_is_not_reported_as_a_person():
     """CreatorTool is a program. It matches /creator/ too, so order matters."""
-    assert metascan.classify_tag("XMP:CreatorTool") == "authoring tool"
-    assert metascan.classify_tag("XMP:Creator") == "identity"
+    assert metascan.classify_tag("XMP:CreatorTool") == ("authoring tool", metascan.PRIVACY)
+    assert metascan.classify_tag("XMP:Creator") == ("identity", metascan.PRIVACY)
+
+
+@pytest.mark.parametrize(
+    "tag, value",
+    [
+        ("IPTC:DigitalSourceType", "trainedAlgorithmicMedia"),
+        ("XMP:CreatorTool", "Stable Diffusion 1.5"),
+        ("PDF:Producer", "ChatGPT"),
+        ("XMP:C2PAManifest", "present"),
+        ("PNG:Parameters", "prompt: a cat, seed: 42"),
+    ],
+)
+def test_ai_markers_are_told_apart_from_privacy_tags(tag, value):
+    assert metascan.classify_tag(tag, value)[1] == metascan.AI
+
+
+@pytest.mark.parametrize(
+    "tag, value",
+    [
+        # The question this whole split answers: a name in a Word file is not
+        # evidence that a machine wrote it.
+        ("XMP:Creator", "Francesco Caiafa"),
+        ("XML:LastModifiedBy", "Francesco Caiafa"),
+        ("XML:Company", "Some GmbH"),
+        ("PDF:Producer", "Microsoft Word"),
+        ("XMP:CreatorTool", "Adobe Photoshop 25.0"),
+        ("EXIF:GPSLatitude", "47 deg 22'"),
+        # A photograph says so in the very tag that names generated media.
+        ("IPTC:DigitalSourceType", "digitalCapture"),
+    ],
+)
+def test_ordinary_metadata_is_not_evidence_of_ai(tag, value):
+    reason, kind = metascan.classify_tag(tag, value)
+    assert kind == metascan.PRIVACY, f"{tag}={value} classified as {reason}"
+
+
+def test_an_unknown_ai_tool_still_reports_the_tag():
+    """The name list ages; the failure mode must stay harmless.
+
+    A generator this list has never heard of is still reported as an authoring
+    tool — described less sharply, never dropped.
+    """
+    reason, kind = metascan.classify_tag("XMP:CreatorTool", "Nebulizer 9000")
+    assert kind == metascan.PRIVACY
+    assert reason == "authoring tool"
 
 
 def test_summarize_splits_and_drops_pipe_noise():
@@ -154,6 +270,48 @@ def test_exiftool_finds_the_pdf_metadata_the_engine_reports_as_nothing():
     assert found.get("PDF:Keywords") == "mark-1234"
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "memfd_create"), reason="memfd is Linux-only; the pipe fallback is used"
+)
+def test_memfd_hands_over_the_bytes_seekably():
+    """The whole point of the memfd: the reader can seek, and the data survives."""
+    fd = metascan._memfd(b"abcdef")
+    assert fd is not None
+    try:
+        os.lseek(fd, 3, os.SEEK_SET)
+        assert os.read(fd, 3) == b"def"
+        os.lseek(fd, 0, os.SEEK_SET)
+        assert os.read(fd, 6) == b"abcdef"
+    finally:
+        os.close(fd)
+
+
+@needs_exiftool
+@pytest.mark.skipif(
+    not hasattr(os, "memfd_create"), reason="a piped DOCX reads as a bare ZIP; memfd is Linux-only"
+)
+@pytest.mark.skipif(
+    not reads_zip_containers(), reason="this exiftool has no Archive::Zip"
+)
+def test_a_docx_is_read_as_a_document_not_as_a_zip():
+    """The regression: piped in on stdin, a DOCX gave up nothing but ZIP fields.
+
+    The engine's own report named the author of the very same file, so "no
+    identifying metadata" from this check was not a second opinion — it was a
+    wrong one.
+    """
+    scanner = metascan.MetaScanner(enabled=True)
+    asyncio.run(scanner.probe())
+    result = asyncio.run(scanner.scan("briefing.docx", make_docx()))
+
+    assert result["ok"] is True
+    found = {entry["tag"]: entry["value"] for entry in result["flagged"]}
+    creators = [value for tag, value in found.items() if tag.endswith(":Creator")]
+    assert "Francesco Caiafa" in creators
+    all_tags = {entry["tag"] for entry in result["flagged"] + result["other"]}
+    assert not all_tags <= {tag for tag in all_tags if tag.startswith(("ZIP:", "File:"))}
+
+
 @needs_exiftool
 def test_oversized_input_is_skipped_rather_than_run():
     scanner = metascan.MetaScanner(enabled=True, max_bytes=10)
@@ -188,9 +346,34 @@ def test_scan_surfaces_metadata_the_engine_missed(monkeypatch):
         scan = item["metadata_scan"]
         assert scan["ok"] is True
         assert "PDF:Author" in {entry["tag"] for entry in scan["flagged"]}
-        # The fake engine calls this file unremarkable; the metadata check is
-        # what makes it suspicious, which is the whole point of running it.
+        # Reported, with the reason, and marked as a privacy tag rather than
+        # as evidence of anything AI.
+        author = next(e for e in scan["flagged"] if e["tag"] == "PDF:Author")
+        assert author["kind"] == metascan.PRIVACY
+        # The engine calls this file unremarkable and so does the verdict: an
+        # author name in a PDF is not a watermark, and saying "watermarks
+        # found" because of one is a false positive, not a second opinion.
+        assert item["suspicious"] is False
+        assert item["flagged_by"] == []
+    finally:
+        client.__exit__(None, None, None)
+
+
+@needs_exiftool
+def test_an_ai_marker_in_the_metadata_does_make_a_file_suspicious(monkeypatch):
+    """The other side of the split: this one really is the tool's business."""
+    monkeypatch.setenv("GUI_EXIFTOOL", "1")
+    client = build_client(Settings())
+    try:
+        response = client.post(
+            "/api/scan/files",
+            files={"files": ("gen.pdf", make_pdf(producer="Stable Diffusion XL"), "application/pdf")},
+        )
+        item = response.json()["items"][0]
         assert item["suspicious"] is True
+        assert item["flagged_by"] == ["metadata"]
+        kinds = {e["tag"]: e["kind"] for e in item["metadata_scan"]["flagged"]}
+        assert kinds["PDF:Producer"] == metascan.AI
     finally:
         client.__exit__(None, None, None)
 
@@ -252,11 +435,38 @@ def test_removal_that_leaves_metadata_behind_is_not_reported_as_verified(monkeyp
         ).json()
         scan_id = scan["items"][0]["id"]
 
-        result = client.post("/api/clean", json={"ids": [scan_id], "options": {}}).json()
+        result = client.post(
+            "/api/clean",
+            json={"ids": [scan_id], "options": {"strip_all_metadata": True}},
+        ).json()
         item = result["items"][0]
         assert item["ok"] is True
         assert any(tag.startswith("PDF:Author") for tag in item["remaining_metadata"])
         assert item["verified"] is False
+    finally:
+        client.__exit__(None, None, None)
+
+
+@needs_exiftool
+def test_metadata_the_options_asked_to_keep_is_not_a_failed_removal(monkeypatch):
+    """`keep_non_ai_metadata` is on by default: the author is meant to survive.
+
+    Reporting it as a leftover would fail a removal that did exactly what it
+    was told to do, and would train the reader to ignore the warning.
+    """
+    monkeypatch.setenv("GUI_EXIFTOOL", "1")
+    client = build_client(Settings())
+    try:
+        scan = client.post(
+            "/api/scan/files", files={"files": ("probe.pdf", make_pdf(), "application/pdf")}
+        ).json()
+        result = client.post(
+            "/api/clean", json={"ids": [scan["items"][0]["id"]], "options": {}}
+        ).json()
+        item = result["items"][0]
+        assert item["ok"] is True
+        assert item["remaining_metadata"] == []
+        assert item["verified"] is True
     finally:
         client.__exit__(None, None, None)
 

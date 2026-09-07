@@ -385,6 +385,8 @@ async def _scan_payloads(
         item.kind = str(report.get("kind") or info.kind)
         item.suspicious = suspicious_verdict(report.get("suspicious"))
         item.evidence = evidence_classes(report.get("suspicious"))
+        if item.suspicious:
+            item.flagged_by.append("engine")
         item.report = report.get("report")
         item.id = cache.put(
             ScanEntry(
@@ -429,8 +431,14 @@ async def _scan_payloads(
                 if result.get("error"):
                     warnings.append(f"{name}: metadata check failed ({result['error']}).")
                 continue
-            if result.get("flagged"):
+            # Only an AI marker is a finding in the sense the verdict means.
+            # A privacy tag — an author, a company, a GPS fix — is reported and
+            # can be stripped, but calling a Word document watermarked because
+            # someone's name is in its properties is simply a false positive.
+            if metascan.has_ai_marker(result):
                 item.suspicious = True
+                if "metadata" not in item.flagged_by:
+                    item.flagged_by.append("metadata")
 
     if clean_targets:
         try:
@@ -477,6 +485,8 @@ async def _scan_payloads(
             # The diff found something the inspector did not report; the file
             # is watermarked whatever the inspector said.
             item.suspicious = True
+            if "diff" not in item.flagged_by:
+                item.flagged_by.append("diff")
             if item.id:
                 cache.update(item.id, cleaned_bytes, options, result.get("report"))
             if len(data) <= MAX_INLINE_TEXT_BYTES:
@@ -503,6 +513,8 @@ def _highlight_from_report(item: ScanItem, data: bytes) -> None:
     # The report named these code points, so the file is marked whatever the
     # top-level verdict said — the same reasoning the diff path uses.
     item.suspicious = True
+    if "diff" not in item.flagged_by:
+        item.flagged_by.append("diff")
     if len(data) <= MAX_INLINE_TEXT_BYTES:
         item.text = original_text
 
@@ -813,7 +825,17 @@ def _register_routes(app: FastAPI) -> None:
                     item = items[slot]
                     if not recheck.get("ok"):
                         continue
-                    item.remaining_metadata = metascan.flagged_tags(recheck)
+                    # Judge the removal by what it was asked to remove. With
+                    # `keep_non_ai_metadata` on — the default — the engine is
+                    # meant to leave the author and camera fields alone, and
+                    # reporting them as survivors would fail a removal that did
+                    # exactly what the options said.
+                    kinds = {metascan.AI}
+                    if options.get("strip_all_metadata") or not options.get(
+                        "keep_non_ai_metadata", True
+                    ):
+                        kinds.add(metascan.PRIVACY)
+                    item.remaining_metadata = metascan.flagged_tags(recheck, kinds)
                     if item.remaining_metadata:
                         item.verified = False
 

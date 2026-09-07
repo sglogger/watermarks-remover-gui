@@ -41,6 +41,14 @@ class ScanItem(BaseModel):
     #: one entry per class that is present, strongest first. None for engines
     #: that still answer with a bare boolean.
     evidence: list[dict[str, Any]] | None = None
+    #: Which passes raised `suspicious`, in the order they ran: "engine" for the
+    #: engine's own verdict, "diff" for carriers the diff found that the engine
+    #: did not report, "metadata" for an identifying tag from the local exiftool
+    #: check. Three very different things end up in one boolean, and a reader
+    #: deserves to know which one they are looking at: an author name in a Word
+    #: file's properties is not a watermark, and saying "watermarks found"
+    #: because of one is how a tool loses its credibility.
+    flagged_by: list[str] = Field(default_factory=list)
     highlightable: bool = False
     #: Original text, sent back only for highlightable files below the inline
     #: size limit, so the browser can render the marked-up view.

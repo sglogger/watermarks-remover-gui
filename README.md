@@ -402,14 +402,35 @@ exiftool named all three. The engine says so itself, in a note it attaches to
 every PDF: *"PDF inspection is best-effort; exiftool/c2patool give more reliable
 metadata detection."*
 
-A flagged tag makes a file suspicious in its own right, so a PDF that carries
-nothing but an author name is now offered for removal instead of showing as
-clean. Only identity-bearing tags count — author, producer, GPS, C2PA, document
-IDs, device serials, the IPTC AI marker and free-text fields. A photo's exposure
-time is metadata but identifies nobody, so it is listed separately and changes
-no verdict.
+Flagged tags come in two kinds, and the difference decides the verdict:
 
-The same check runs again on the cleaned bytes, which is where it earns its
+- **AI markers** — a C2PA manifest, IPTC's `DigitalSourceType` saying
+  `trainedAlgorithmicMedia`, a generation-parameter blob, or an authoring tool
+  whose *value* names a known generator. These make a file suspicious in their
+  own right: this is what the tool is for.
+- **Privacy tags** — an author, a company, a GPS fix, a camera serial, a
+  document ID, a rights statement. Worth showing and worth stripping, but a
+  Word file that names its author is not machine-generated. These are reported
+  and offered for removal without touching the watermark verdict.
+
+Two rules read the value rather than the tag name, because the name cannot
+settle it: `PDF:Producer` is `Microsoft Word` as often as it is anything else,
+and `DigitalSourceType` says `digitalCapture` for a photograph in the same
+field where a generated image says `trainedAlgorithmicMedia`. The generator
+name list will always trail the market; a miss downgrades the label from *AI
+tool* to *authoring tool* and the tag is still shown and still removable, so
+nothing disappears because a product is missing from it. Free-text values are
+deliberately **not** scanned for AI phrasing: a document *about* AI would trip
+it, and a false "AI-generated" verdict costs more than the finding is worth.
+
+A photo's exposure time identifies nobody and is neither — it is listed
+separately and changes no verdict.
+
+The same check runs again on the cleaned bytes, judged against the options that
+were actually chosen: with `keep_non_ai_metadata` on — the default — the engine
+is *meant* to leave the author and camera fields in place, so finding them
+afterwards is not a failed removal. Only tags the chosen options were supposed
+to strip can turn a removal into "still flagged". That is where it earns its
 keep. Measured against v0.6.0: a PNG carrying EXIF, XMP and PNG text chunks
 comes back with EXIF and GPS gone but `PNG:Author`, `PNG:Artist`,
 `PNG:Copyright`, `PNG:Software`, `XMP:CreatorTool` and `XMP:XMPToolkit` intact —
@@ -419,9 +440,21 @@ surviving tag.
 
 The trade is deliberate: this runs a third-party binary over untrusted uploads,
 which is work the engine otherwise isolates inside its own container, and
-exiftool has a CVE history. That is why it is opt-in. Bytes are piped in on
-stdin, so nothing is written to disk either way, and the container's read-only
-root filesystem stays read-only.
+exiftool has a CVE history. That is why it is opt-in. The bytes are handed over
+in RAM — an anonymous `memfd` on Linux, a pipe on stdin anywhere else — so
+nothing is written to disk either way, and the container's read-only root
+filesystem stays read-only.
+
+The memfd is not a detail. exiftool reads a pipe strictly forwards, and every
+ZIP-based format (DOCX, XLSX, PPTX, ODT, EPUB) keeps its index at the end of the
+file: piped in, each one came back as a bare `FileType: ZIP` with a dozen
+archive fields and none of its document metadata, so a DOCX whose author the
+engine's own report named was reported here as having *no identifying metadata*.
+A memfd is seekable, so the container is read in full. The image also installs
+`Archive::Zip`, which exiftool merely recommends and without which it cannot
+open a ZIP container at all. Off Linux the pipe fallback applies and ZIP-based
+formats stay shallow; the engine's own exiftool lines still show up in the
+results either way.
 
 ---
 

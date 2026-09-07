@@ -11,14 +11,74 @@ its own releases and its own changelog; the version this stack runs is pinned by
 
 ## [Unreleased]
 
+### Fixed
+
+- **The local metadata check was blind to every Office document.** DOCX, XLSX,
+  PPTX, ODT and EPUB are ZIP containers that keep their index at the end of the
+  file, and the bytes were handed to exiftool on stdin, which it reads strictly
+  forwards. Every one of them came back as `FileType: ZIP` with a dozen archive
+  fields and none of the document metadata — so a file whose engine report named
+  `XMP-dc:Creator` was reported here as having "no identifying metadata", which
+  is worse than saying nothing. The bytes now go through an anonymous `memfd`,
+  which is seekable and still never touches a filesystem, and the image installs
+  `Archive::Zip` — a module exiftool only recommends, and without which it will
+  not open a ZIP container at all. Off Linux the stdin fallback still applies.
+- **An author name was treated as evidence of AI.** This is a watermark
+  remover, and it was calling a Word document watermarked because someone's
+  name sat in its properties. Flagged tags are now classified as either an
+  **AI marker** — C2PA, `DigitalSourceType: trainedAlgorithmicMedia`, a
+  generation-parameter blob, an authoring tool whose value names a known
+  generator — or a **privacy tag**: author, company, GPS, device serial,
+  rights, document ID. Only the first kind moves the watermark verdict. The
+  second is still reported, still badged, still offered for removal, and no
+  longer claims to be something it is not. Two rules now read the tag's value
+  rather than its name, because the name cannot settle it: `PDF:Producer` is
+  `Microsoft Word` as often as anything else, and `DigitalSourceType` says
+  `digitalCapture` for a photograph in the same field where generated media
+  says `trainedAlgorithmicMedia` — the old rule flagged both.
+- **A removal was failed for doing exactly what it was told.**
+  `keep_non_ai_metadata` is on by default, so the engine deliberately preserves
+  author and camera fields — and the post-removal re-check then reported those
+  same fields as survivors and marked the file "still flagged". The re-check now
+  judges against the options that were chosen; only tags that were supposed to
+  be stripped can fail a removal.
+- **`PNG:Parameters` was not recognised.** Automatic1111 and ComfyUI write the
+  whole prompt, seed and sampler blob into that tag, which makes it the most
+  common AI marker on a locally generated image, and no rule matched it.
+- **"Watermarks found" was reported for files that had none.** An identifying
+  metadata tag has always counted as a finding in its own right, and it should:
+  an author name left in a document is exactly what people run this tool to get
+  rid of. But it was then announced as a watermark. With Office documents newly
+  readable (above), a Word file whose only sin is a `dc:creator` started coming
+  back as "1 file contain watermarks", which is both wrong and ungrammatical.
+  The scan now says which pass raised the flag — the server reports it in a new
+  `flagged_by` field — so a metadata-only finding reads "No watermarks found,
+  but 1 file carries identifying metadata", carries a `metadata` badge instead
+  of `found`, and offers a "Remove identifying metadata" button.
+- **The metadata section claimed the engine had missed tags it had reported.**
+  "N identifying tags found that the engine report does not list" was printed
+  unconditionally. The engine names some of them in its own exiftool lines, so
+  the two are now actually compared — by tag name, since the engine reports
+  group family 1 (`XMP-dc:Creator`) and the local pass family 0 (`XMP:Creator`).
+- **Office identity tags were not flagged as identifying.** `LastModifiedBy`
+  (whoever last saved the document), `Company` and `Application` now count as
+  findings. They were never reachable before this fix, so no rule had ever been
+  written for them. `IPTC:ApplicationRecordVersion`, a format version number
+  rather than a program, stays unflagged.
+
 ### Added
 
 - **A batch-wide metadata dropdown in the file results.** Directly under the
-  scan verdict, "All metadata found" lists every tag the local metadata pass
-  read, grouped by file, with the identifying ones marked and their reason
-  shown. The same tags were already in each file row, but only for the row you
-  opened — and a "no watermarks found" verdict still leaves the question of
-  what the files actually say about their author, tooling and origin.
+  scan verdict, "All metadata found" lists every metadata tag either pass read,
+  grouped by file: the engine's own exiftool lines, carried in its report as
+  pre-formatted console text and split back into tag and value here, and — when
+  `GUI_EXIFTOOL` is on — the fuller local pass, whose identifying tags are
+  marked with the reason they were flagged. The two are kept apart and labelled,
+  because they do not always agree: a DOCX whose XMP names a creator can come
+  back with that tag from one pass and not the other. The same data was already
+  in each file row, but only for the row you opened — and a "no watermarks
+  found" verdict still leaves the question of what the files actually say about
+  their author, tooling and origin.
 
 ## [1.2.0] — 2026-09-05
 

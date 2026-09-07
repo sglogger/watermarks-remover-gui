@@ -687,7 +687,7 @@ function renderReport(report) {
 // and it is labelled as such. Two programs looked at the file and they do not
 // always agree — presenting the second one as if it were the engine's answer
 // would hide exactly the disagreement that makes it worth running.
-function renderMetadataScan(scan) {
+function renderMetadataScan(scan, item) {
   const section = el('section', 'metascan');
   if (!scan) return section;
 
@@ -701,20 +701,39 @@ function renderMetadataScan(scan) {
     return section;
   }
 
+  const ai = flagged.filter((entry) => entry.kind === 'ai');
+  const privacy = flagged.filter((entry) => (entry.kind || 'privacy') === 'privacy');
+
   if (!flagged.length) {
     section.appendChild(el('p', 'muted',
       other.length
         ? `No identifying metadata. ${plural(other.length, 'other tag')} read.`
         : 'No metadata found.'));
   } else {
-    section.appendChild(el('p', 'risk',
-      `${plural(flagged.length, 'identifying tag')} found that the engine report does not list.`));
-    const list = el('dl', 'kv');
-    for (const entry of flagged) {
-      list.appendChild(el('dt', null, `${entry.tag} · ${entry.reason}`));
-      list.appendChild(el('dd', null, entry.value));
+    // The engine names some of these itself, in its own exiftool lines. Saying
+    // it missed a tag it reported would be the kind of claim that makes the
+    // rest of this section untrustworthy, so it is checked rather than assumed.
+    const known = new Set(engineMetaEntries(item || {}).map(tagName));
+    const unlisted = flagged.filter((entry) => !known.has(tagName(entry)));
+    const counted = `${plural(flagged.length, 'identifying tag')} found`;
+    section.appendChild(el('p', 'risk', unlisted.length === flagged.length
+      ? `${counted} that the engine report does not list.`
+      : unlisted.length
+        ? `${counted}, ${unlisted.length} of ${flagged.length > 1 ? 'them' : 'which'} ` +
+          'absent from the engine report.'
+        : `${counted}. The engine report ${flagged.length === 1 ? 'lists it' : 'lists them'} too.`));
+
+    if (ai.length) {
+      section.appendChild(el('p', 'metascan-kind',
+        `${plural(ai.length, 'tag')} that the file was machine-generated:`));
+      section.appendChild(metaScanList(ai));
     }
-    section.appendChild(list);
+    if (privacy.length) {
+      section.appendChild(el('p', 'metascan-kind', ai.length
+        ? 'And identifying the author, tooling or origin — not evidence of AI:'
+        : 'Identifying the author, tooling or origin. Not evidence of AI:'));
+      section.appendChild(metaScanList(privacy));
+    }
   }
 
   if (other.length) {
@@ -733,6 +752,15 @@ function renderMetadataScan(scan) {
   }
   if (scan.error) section.appendChild(el('p', 'muted', scan.error));
   return section;
+}
+
+function metaScanList(entries) {
+  const list = el('dl', 'kv');
+  for (const entry of entries) {
+    list.appendChild(el('dt', null, `${entry.tag} · ${entry.reason}`));
+    list.appendChild(el('dd', null, entry.value));
+  }
+  return list;
 }
 
 /* ------------------------------------------------------------ rich paste */
@@ -1026,15 +1054,41 @@ function renderFileResults(warnings) {
   container.appendChild(card);
 
   const items = state.fileScans;
-  const marked = items.filter((i) => i.ok && i.suspicious && i.id);
   const failed = items.filter((i) => !i.ok);
+  // Two different things, kept apart on purpose. `suspicious` is the watermark
+  // verdict; privacy tags are an author name or a GPS fix, which are worth
+  // removing but say nothing about how the file was made.
+  const watermarked = items.filter((i) => i.ok && i.suspicious && i.id);
+  const metaOnly = items.filter((i) => i.ok && i.id && !i.suspicious && privacyTags(i).length);
+  const marked = watermarked.concat(metaOnly);
 
-  const headline = marked.length
-    ? `${plural(marked.length, 'file')} contain watermarks.`
-    : items.some((i) => i.ok)
+  let headline;
+  if (watermarked.length && metaOnly.length) {
+    headline = `${plural(watermarked.length, 'file')} ${verb(watermarked.length, 'contains', 'contain')} ` +
+      `watermarks, ${plural(metaOnly.length, 'other')} ${verb(metaOnly.length, 'carries', 'carry')} ` +
+      'identifying metadata.';
+  } else if (watermarked.length) {
+    headline = `${plural(watermarked.length, 'file')} ${verb(watermarked.length, 'contains', 'contain')} watermarks.`;
+  } else if (metaOnly.length) {
+    headline = `No watermarks found, but ${plural(metaOnly.length, 'file')} ` +
+      `${verb(metaOnly.length, 'carries', 'carry')} identifying metadata.`;
+  } else {
+    headline = items.some((i) => i.ok)
       ? 'No watermarks found in the scanned files.'
       : 'No files could be scanned.';
+  }
   card.appendChild(summaryLine(marked.length ? 'found' : failed.length === items.length ? 'error' : 'clean', headline));
+  if (metaOnly.length) {
+    const keeps = state.options.strip_all_metadata !== true
+      && state.options.keep_non_ai_metadata !== false;
+    card.appendChild(el('p', 'muted',
+      'Identifying metadata is what a file says about who and what made it — an author ' +
+      'name, a company, a camera, a location. It is not evidence of a watermark, and no ' +
+      `watermark was found in ${metaOnly.length > 1 ? 'those files' : 'that file'}.` +
+      (keeps
+        ? ' The current options keep it: turn on "Strip all metadata" to remove it.'
+        : ' The current options remove it.')));
+  }
 
   const digest = renderMetadataDigest(items);
   if (digest) card.appendChild(digest);
@@ -1046,94 +1100,141 @@ function renderFileResults(warnings) {
   if (marked.length) {
     const actions = el('div', 'row row-between actions');
     actions.appendChild(el('span', 'muted', 'Cleaned copies are offered as downloads; originals are untouched.'));
-    const button = el('button', 'primary', marked.length > 1 ? `Remove from ${plural(marked.length, 'file')}` : 'Remove watermarks');
+    const label = marked.length > 1
+      ? `Remove from ${plural(marked.length, 'file')}`
+      : watermarked.length ? 'Remove watermarks' : 'Remove identifying metadata';
+    const button = el('button', 'primary', label);
     button.addEventListener('click', () => cleanFiles(marked.map((i) => i.id), button, card));
     actions.appendChild(button);
     card.appendChild(actions);
   }
 }
 
-// Every tag the local metadata pass read, from every file in the batch, in one
-// place. The per-file rows below hold the same data, but only for the row you
-// happen to open; a watermark-free verdict still leaves the question "what is
-// actually written in these files?", and this answers it in one click.
-function renderMetadataDigest(items) {
-  const scanned = items.filter((item) => item.ok && item.metadata_scan);
-  if (!scanned.length) return null;
+// Tags that describe the pipe exiftool was fed, not the file that came down it.
+// Mirrors `_PIPE_TAGS` in app/metascan.py, which drops the same ones from the
+// local pass; the engine leaves them in its own lines.
+const META_PIPE_TAGS = new Set([
+  'ExifTool:ExifToolVersion',
+  'File:FileName',
+  'File:Directory',
+  'File:FileSize',
+  'File:FileModifyDate',
+  'File:FileAccessDate',
+  'File:FileInodeChangeDate',
+  'File:FilePermissions',
+]);
 
+// The engine reports its own exiftool pass as pre-formatted console lines —
+// "[XMP-dc]        Creator                         : Francesco Caiafa" — under
+// report.tools.exiftool.interesting_lines. Split back into tag and value so
+// they read like every other metadata row instead of a wall of padding.
+function engineMetaEntries(item) {
+  const tools = (item.report && item.report.tools) || null;
+  const exif = tools && typeof tools === 'object' ? tools.exiftool : null;
+  const lines = (exif && exif.interesting_lines) || [];
+  const entries = [];
+  for (const raw of lines) {
+    const line = String(raw);
+    const match = /^\[([^\]]*)\]\s*(.+?)\s*:\s?(.*)$/.exec(line);
+    if (!match) {
+      entries.push({ tag: line.trim(), value: '' });
+      continue;
+    }
+    const tag = `${match[1].trim()}:${match[2].trim()}`;
+    if (META_PIPE_TAGS.has(tag)) continue;
+    entries.push({ tag, value: match[3].trim() });
+  }
+  return entries;
+}
+
+// Every metadata tag anyone read, from every file in the batch, in one place.
+// Two passes end up here: the engine's own exiftool lines, carried in its
+// report, and — when GUI_EXIFTOOL is on — the fuller local pass, which also
+// says which tags identify someone. The per-file rows below hold the same data,
+// but only for the row you happen to open; a watermark-free verdict still
+// leaves the question "what is actually written in these files?", and this
+// answers it in one click.
+function renderMetadataDigest(items) {
+  const groups = [];
   let flaggedTotal = 0;
   let tagTotal = 0;
-  let failedScans = 0;
-  for (const item of scanned) {
-    const scan = item.metadata_scan;
-    if (!scan.ok) failedScans += 1;
-    flaggedTotal += (scan.flagged || []).length;
-    tagTotal += (scan.flagged || []).length + (scan.other || []).length;
+
+  for (const item of items) {
+    if (!item.ok) continue;
+    const scan = item.metadata_scan || null;
+    const engine = engineMetaEntries(item);
+    if (!scan && !engine.length) continue;
+    const flagged = (scan && scan.ok && scan.flagged) || [];
+    const other = (scan && scan.ok && scan.other) || [];
+    if (!flagged.length && !other.length && !engine.length && !(scan && !scan.ok)) continue;
+    flaggedTotal += flagged.length;
+    tagTotal += flagged.length + other.length + engine.length;
+    groups.push({ item, scan, engine, flagged, other });
   }
-  if (!tagTotal && !failedScans) return null;
+  if (!groups.length) return null;
 
   const block = el('details', 'report-block meta-digest');
   const summary = el('summary');
   summary.appendChild(el('span', null,
-    `All metadata found (${plural(tagTotal, 'tag')} in ${plural(scanned.length, 'file')})`));
+    `All metadata found (${plural(tagTotal, 'tag')} in ${plural(groups.length, 'file')})`));
   if (flaggedTotal) {
     summary.appendChild(el('span', 'badge badge-found', `${flaggedTotal} identifying`));
   }
   block.appendChild(summary);
 
   const body = el('div', 'meta-digest-body');
-  for (const item of scanned) {
-    const scan = item.metadata_scan;
-    const group = el('section', 'meta-digest-file');
-    const title = el('h5', 'meta-digest-name');
-    title.appendChild(el('span', null, item.name));
-    const tool = `${scan.tool || 'exiftool'}${scan.version ? ' ' + scan.version : ''}`;
-    title.appendChild(el('span', 'meta-digest-tool', tool));
-    group.appendChild(title);
+  for (const group of groups) {
+    const { item, scan, engine, flagged, other } = group;
+    const section = el('section', 'meta-digest-file');
+    section.appendChild(el('h5', 'meta-digest-name', item.name));
 
-    if (!scan.ok) {
-      group.appendChild(el('p', 'muted', scan.error || 'The metadata check did not run.'));
-      body.appendChild(group);
-      continue;
+    if (engine.length) {
+      section.appendChild(el('p', 'meta-digest-source', 'Engine report · exiftool'));
+      section.appendChild(metaList(engine));
     }
 
-    const flagged = scan.flagged || [];
-    const other = scan.other || [];
-    if (flagged.length) {
-      const list = el('dl', 'kv');
-      for (const entry of flagged) {
-        const term = el('dt', 'meta-flagged');
-        term.appendChild(el('span', null, entry.tag));
-        term.appendChild(el('span', 'meta-reason', entry.reason));
-        list.appendChild(term);
-        list.appendChild(el('dd', null, entry.value));
+    if (scan && !scan.ok) {
+      section.appendChild(el('p', 'meta-digest-source',
+        `Local ${scan.tool || 'exiftool'} check`));
+      section.appendChild(el('p', 'muted', scan.error || 'The metadata check did not run.'));
+    } else if (scan) {
+      const tool = `Local ${scan.tool || 'exiftool'}${scan.version ? ' ' + scan.version : ''}`;
+      section.appendChild(el('p', 'meta-digest-source', tool));
+      if (flagged.length) section.appendChild(metaList(flagged, true));
+      if (other.length) section.appendChild(metaList(other));
+      if (!flagged.length && !other.length) {
+        section.appendChild(el('p', 'muted', 'No metadata found in this file.'));
       }
-      group.appendChild(list);
+      if (scan.truncated) section.appendChild(el('p', 'muted', 'The tag list was truncated.'));
+      if (scan.error) section.appendChild(el('p', 'muted', scan.error));
     }
-    if (other.length) {
-      const list = el('dl', 'kv');
-      for (const entry of other) {
-        list.appendChild(el('dt', null, entry.tag));
-        list.appendChild(el('dd', null, entry.value));
-      }
-      group.appendChild(list);
-    }
-    if (!flagged.length && !other.length) {
-      group.appendChild(el('p', 'muted', 'No metadata found in this file.'));
-    }
-    if (scan.truncated) group.appendChild(el('p', 'muted', 'The tag list was truncated.'));
-    if (scan.ok && scan.error) group.appendChild(el('p', 'muted', scan.error));
-    body.appendChild(group);
+    body.appendChild(section);
   }
 
-  const unchecked = items.filter((item) => item.ok && !item.metadata_scan).length;
+  const unchecked = items.filter((item) =>
+    item.ok && !item.metadata_scan && !engineMetaEntries(item).length).length;
   if (unchecked) {
     body.appendChild(el('p', 'muted',
-      `${plural(unchecked, 'file')} not covered: the metadata check only reads formats that ` +
-      'can carry container metadata.'));
+      `${plural(unchecked, 'file')} carried no metadata either pass could read.`));
   }
   block.appendChild(body);
   return block;
+}
+
+// A tag is worth showing even when its value is empty — "Title :" with nothing
+// after it means the field exists in the file, which is not the same as absent.
+function metaList(entries, flagged) {
+  const list = el('dl', 'kv');
+  for (const entry of entries) {
+    const term = el('dt', flagged ? 'meta-flagged' : null);
+    term.appendChild(el('span', null, entry.tag));
+    if (flagged && entry.reason) term.appendChild(el('span', 'meta-reason', entry.reason));
+    list.appendChild(term);
+    list.appendChild(entry.value
+      ? el('dd', null, entry.value)
+      : el('dd', 'muted', '(empty)'));
+  }
+  return list;
 }
 
 function renderFileRow(item, index) {
@@ -1147,6 +1248,7 @@ function renderFileRow(item, index) {
 
   const status = !item.ok ? ['badge-error', 'error']
     : item.suspicious ? ['badge-found', hitLabel(item)]
+    : privacyTags(item).length ? ['badge-meta', 'metadata']
     : ['badge-clean', 'clean'];
   const badge = el('span', `badge ${status[0]}`, status[1]);
   badge.dataset.role = 'status';
@@ -1180,19 +1282,45 @@ function renderFileRow(item, index) {
     } else if (item.highlight && (item.highlight.legend || []).length) {
       body.appendChild(renderLegend(item.highlight.legend, null));
     } else if (item.suspicious) {
-      const onlyMetadata = ((item.metadata_scan || {}).flagged || []).length
-        && !(item.report && (item.report.findings || []).length);
-      body.appendChild(el('p', 'muted', onlyMetadata
+      const raisedBy = item.flagged_by || [];
+      body.appendChild(el('p', 'muted', aiTags(item).length && !raisedBy.includes('engine')
         ? 'Flagged by the local metadata check below, not by the engine report.'
         : 'This format cannot be marked up in place; the engine report below lists what was found.'));
+    } else if (privacyTags(item).length) {
+      body.appendChild(el('p', 'muted',
+        'No watermark found. What is listed below is metadata the file carries about ' +
+        'its author, tooling or origin.'));
     }
     if (item.report) body.appendChild(renderReport(item.report));
-    if (item.metadata_scan) body.appendChild(renderMetadataScan(item.metadata_scan));
+    if (item.metadata_scan) body.appendChild(renderMetadataScan(item.metadata_scan, item));
   }
 
   row.appendChild(head);
   row.appendChild(body);
   return row;
+}
+
+function verb(count, singular, pluralForm) {
+  return count === 1 ? singular : pluralForm;
+}
+
+// Tags the server classified as a privacy leak rather than as an AI marker:
+// an author, a company, a device, a location. `kind` is absent in responses
+// from an older server, where every flagged tag was treated as a finding.
+function privacyTags(item) {
+  return ((item.metadata_scan || {}).flagged || [])
+    .filter((entry) => (entry.kind || 'privacy') === 'privacy');
+}
+
+function aiTags(item) {
+  return ((item.metadata_scan || {}).flagged || []).filter((entry) => entry.kind === 'ai');
+}
+
+// The last segment of a tag, lowercased: the engine reports "XMP-dc:Creator"
+// (group family 1) and the local pass "XMP:Creator" (family 0), so only the
+// name after the colon can be compared between the two.
+function tagName(entry) {
+  return String(entry.tag || '').split(':').pop().toLowerCase();
 }
 
 // "8 hidden characters and 1 marked block" reads far better than "148 characters",
@@ -1208,6 +1336,7 @@ function describeFindings(highlight) {
 }
 
 function hitLabel(item) {
+  if (!item.suspicious) return 'metadata';
   if (!item.highlight) return 'found';
   const chars = item.highlight.carrier_chars || 0;
   const blocks = item.highlight.block_regions || 0;

@@ -17,8 +17,16 @@ WORKDIR /srv
 # unused when the check is off, which is the default: the engine runs its own
 # copy in its own container, and this one only exists to read the tags the
 # engine's report leaves out.
+#
+# Archive::Zip is not optional despite being a recommendation: without it
+# exiftool cannot open a ZIP container at all, so every DOCX, XLSX, PPTX, ODT
+# and EPUB comes back as "FileType: ZIP" with a handful of archive fields and
+# none of the document metadata — which is precisely what this check exists to
+# read. exiftool says so in a warning that is easy to miss.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y libimage-exiftool-perl \
+    && apt-get install --no-install-recommends -y \
+        libimage-exiftool-perl \
+        libarchive-zip-perl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
